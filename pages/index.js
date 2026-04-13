@@ -29,11 +29,10 @@ export default function Home() {
   const [pin, setPin] = useState('')
   const [estado, setEstado] = useState(null)
   const [hora, setHora] = useState('')
-  const videoRef = useRef(null)
-  const canvasRef = useRef(null)
-  const streamRef = useRef(null)
-  const [camaraActiva, setCamaraActiva] = useState(false)
   const [fotoCapturada, setFotoCapturada] = useState(null)
+  const [esperandoFoto, setEsperandoFoto] = useState(false)
+  const canvasRef = useRef(null)
+  const fileInputRef = useRef(null)
 
   useEffect(() => {
     cargarDatos()
@@ -62,7 +61,7 @@ export default function Home() {
     setPin('')
     setEstado(null)
     setFotoCapturada(null)
-    detenerCamara()
+    setEsperandoFoto(false)
   }
 
   function presionarPin(digit) {
@@ -73,45 +72,22 @@ export default function Home() {
     setPin(p => p.slice(0, -1))
   }
 
-  async function iniciarCamara() {
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({ 
-        video: { facingMode: { ideal: 'user' }, width: { ideal: 320 }, height: { ideal: 240 } } 
-      })
-      streamRef.current = stream
-      if (videoRef.current) {
-        videoRef.current.srcObject = stream
-        videoRef.current.play()
-      }
-      setCamaraActiva(true)
-    } catch(e) {
-      console.log('Camara no disponible', e)
+  function handleFotoSeleccionada(e) {
+    const file = e.target.files[0]
+    if (!file) return
+    const reader = new FileReader()
+    reader.onload = (ev) => {
+      setFotoCapturada(ev.target.result)
+      setEsperandoFoto(false)
     }
-  }
-
-  function detenerCamara() {
-    if (streamRef.current) {
-      streamRef.current.getTracks().forEach(t => t.stop())
-      streamRef.current = null
-    }
-    setCamaraActiva(false)
-  }
-
-  function sacarFoto() {
-    if (!videoRef.current || !canvasRef.current) return null
-    const canvas = canvasRef.current
-    const video = videoRef.current
-    canvas.width = 320
-    canvas.height = 240
-    canvas.getContext('2d').drawImage(video, 0, 0, 320, 240)
-    return canvas.toDataURL('image/jpeg', 0.7)
+    reader.readAsDataURL(file)
   }
 
   async function subirFoto(dataUrl, nombre) {
     try {
       const blob = await (await fetch(dataUrl)).blob()
       const filename = `${nombre}-${Date.now()}.jpg`
-      const { data, error } = await supabase.storage
+      const { error } = await supabase.storage
         .from('fichajes-fotos')
         .upload(filename, blob, { contentType: 'image/jpeg' })
       if (error) return null
@@ -130,15 +106,10 @@ export default function Home() {
       setTimeout(() => setEstado(null), 1500)
       return
     }
-    if (!camaraActiva && !fotoCapturada) {
-      await iniciarCamara()
-      setEstado('camara')
+    if (!fotoCapturada) {
+      setEsperandoFoto(true)
+      setTimeout(() => fileInputRef.current && fileInputRef.current.click(), 100)
       return
-    }
-    if (camaraActiva) {
-      const foto = sacarFoto()
-      setFotoCapturada(foto)
-      detenerCamara()
     }
     setEstado('ubicacion')
     navigator.geolocation.getCurrentPosition(
@@ -163,7 +134,7 @@ export default function Home() {
         })
         setEstado(accion === 'entrada' ? 'ok_entrada' : 'ok_salida')
         await cargarDatos()
-        setTimeout(() => { 
+        setTimeout(() => {
           setSeleccionado(null); setPin(''); setEstado(null); setFotoCapturada(null)
         }, 2000)
       },
@@ -177,6 +148,16 @@ export default function Home() {
 
   return (
     <div style={{ minHeight: '100vh', background: '#f8fafc' }}>
+      <canvas ref={canvasRef} style={{ display: 'none' }} />
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept="image/*"
+        capture="user"
+        style={{ display: 'none' }}
+        onChange={handleFotoSeleccionada}
+      />
+
       <div style={{ background: '#fff', borderBottom: '1px solid #e2e8f0', padding: '16px 24px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
         <div>
           <div style={{ fontSize: 22, fontWeight: 600 }}>{hora}</div>
@@ -195,7 +176,7 @@ export default function Home() {
 
       {!seleccionado && (
         <div style={{ padding: '24px', maxWidth: 700, margin: '0 auto' }}>
-          <div style={{ fontSize: 15, color: '#64748b', marginBottom: 16 }}>Tocá tu nombre para fichar</div>
+          <div style={{ fontSize: 15, color: '#64748b', marginBottom: 16 }}>Toca tu nombre para fichar</div>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(150px, 1fr))', gap: 12 }}>
             {empleados.map((emp, i) => {
               const dentro = estaAdentro(emp.id)
@@ -217,7 +198,7 @@ export default function Home() {
           </div>
           {empleados.length === 0 && (
             <div style={{ textAlign: 'center', padding: '3rem', color: '#94a3b8', fontSize: 14 }}>
-              No hay empleados cargados. Entrá al panel admin para agregarlos.
+              No hay empleados cargados. Entra al panel admin para agregarlos.
             </div>
           )}
         </div>
@@ -234,41 +215,42 @@ export default function Home() {
               {estaAdentro(seleccionado.id) ? 'Registrar salida' : 'Registrar entrada'}
             </div>
 
-            {estado === 'camara' && (
-              <div style={{ marginBottom: 16 }}>
-                <div style={{ fontSize: 13, color: '#2563eb', marginBottom: 8 }}>Mirá la camara y toca "Sacar foto"</div>
-                <video ref={videoRef} autoPlay playsInline muted style={{ width: '100%', borderRadius: 10, background: '#000' }} />
-                <canvas ref={canvasRef} style={{ display: 'none' }} />
-                <button onClick={confirmar} style={{ marginTop: 10, width: '100%', padding: '12px', background: '#1e293b', color: '#fff', border: 'none', borderRadius: 10, fontSize: 14, fontWeight: 500, cursor: 'pointer' }}>
-                  Sacar foto y fichar
-                </button>
-                <button onClick={() => { setSeleccionado(null); detenerCamara(); setEstado(null) }} style={{ marginTop: 8, width: '100%', padding: '10px', background: 'none', border: '1px solid #e2e8f0', borderRadius: 10, fontSize: 13, color: '#64748b', cursor: 'pointer' }}>
-                  Cancelar
+            {esperandoFoto && !fotoCapturada && (
+              <div style={{ marginBottom: 16, padding: '16px', background: '#f1f5f9', borderRadius: 10 }}>
+                <div style={{ fontSize: 14, color: '#475569', marginBottom: 12 }}>Saca una selfie para continuar</div>
+                <button
+                  onClick={() => fileInputRef.current && fileInputRef.current.click()}
+                  style={{ width: '100%', padding: '12px', background: '#1e293b', color: '#fff', border: 'none', borderRadius: 10, fontSize: 14, fontWeight: 500, cursor: 'pointer' }}>
+                  Abrir camara
                 </button>
               </div>
             )}
 
-            {fotoCapturada && estado !== 'camara' && (
+            {fotoCapturada && (
               <div style={{ marginBottom: 16 }}>
-                <img src={fotoCapturada} style={{ width: '100%', borderRadius: 10 }} alt="foto" />
+                <img src={fotoCapturada} style={{ width: '100%', borderRadius: 10, maxHeight: 200, objectFit: 'cover' }} alt="foto" />
+                <button onClick={() => { setFotoCapturada(null); setEsperandoFoto(false) }}
+                  style={{ marginTop: 8, background: 'none', border: 'none', color: '#94a3b8', fontSize: 12, cursor: 'pointer' }}>
+                  Sacar otra foto
+                </button>
               </div>
             )}
 
-            {estado !== 'camara' && (
+            <div style={{ display: 'flex', justifyContent: 'center', gap: 14, marginBottom: 20 }}>
+              {[0,1,2,3].map(i => (
+                <div key={i} style={{ width: 14, height: 14, borderRadius: '50%', background: i < pin.length ? '#334155' : '#e2e8f0' }} />
+              ))}
+            </div>
+
+            {estado === 'error' && <div style={{ color: '#dc2626', fontSize: 13, marginBottom: 12 }}>PIN incorrecto</div>}
+            {estado === 'ubicacion' && <div style={{ color: '#2563eb', fontSize: 13, marginBottom: 12 }}>Verificando ubicacion...</div>}
+            {estado === 'lejos' && <div style={{ color: '#d97706', fontSize: 13, marginBottom: 12 }}>Estas muy lejos del negocio</div>}
+            {estado === 'geo_error' && <div style={{ color: '#dc2626', fontSize: 13, marginBottom: 12 }}>Activa la ubicacion en tu celu</div>}
+            {estado === 'ok_entrada' && <div style={{ color: '#16a34a', fontSize: 14, fontWeight: 500, marginBottom: 12 }}>Entrada registrada</div>}
+            {estado === 'ok_salida' && <div style={{ color: '#dc2626', fontSize: 14, fontWeight: 500, marginBottom: 12 }}>Salida registrada</div>}
+
+            {!esperandoFoto && (
               <>
-                <div style={{ display: 'flex', justifyContent: 'center', gap: 14, marginBottom: 20 }}>
-                  {[0,1,2,3].map(i => (
-                    <div key={i} style={{ width: 14, height: 14, borderRadius: '50%', background: i < pin.length ? '#334155' : '#e2e8f0' }} />
-                  ))}
-                </div>
-
-                {estado === 'error' && <div style={{ color: '#dc2626', fontSize: 13, marginBottom: 12 }}>PIN incorrecto</div>}
-                {estado === 'ubicacion' && <div style={{ color: '#2563eb', fontSize: 13, marginBottom: 12 }}>Verificando ubicacion...</div>}
-                {estado === 'lejos' && <div style={{ color: '#d97706', fontSize: 13, marginBottom: 12 }}>Estas muy lejos del negocio</div>}
-                {estado === 'geo_error' && <div style={{ color: '#dc2626', fontSize: 13, marginBottom: 12 }}>Activa la ubicacion en tu celu</div>}
-                {estado === 'ok_entrada' && <div style={{ color: '#16a34a', fontSize: 14, fontWeight: 500, marginBottom: 12 }}>Entrada registrada</div>}
-                {estado === 'ok_salida' && <div style={{ color: '#dc2626', fontSize: 14, fontWeight: 500, marginBottom: 12 }}>Salida registrada</div>}
-
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 10, marginBottom: 16 }}>
                   {[1,2,3,4,5,6,7,8,9].map(n => (
                     <button key={n} onClick={() => presionarPin(String(n))} disabled={!!estado && estado !== 'error'}
