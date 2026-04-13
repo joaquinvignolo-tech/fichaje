@@ -1,356 +1,443 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect } from 'react'
 import { supabase } from '../lib/supabase'
 import { useRouter } from 'next/router'
 
-const NEGOCIO_LAT = parseFloat(process.env.NEXT_PUBLIC_NEGOCIO_LAT)
-const NEGOCIO_LNG = parseFloat(process.env.NEXT_PUBLIC_NEGOCIO_LNG)
-const RADIO_METROS = parseFloat(process.env.NEXT_PUBLIC_RADIO_METROS) || 150
-
-function distancia(lat1, lng1, lat2, lng2) {
-  const R = 6371000
-  const dLat = (lat2 - lat1) * Math.PI / 180
-  const dLng = (lng2 - lng1) * Math.PI / 180
-  const a = Math.sin(dLat/2)**2 + Math.cos(lat1*Math.PI/180)*Math.cos(lat2*Math.PI/180)*Math.sin(dLng/2)**2
-  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a))
-}
-
-const COLORS = ['#dbeafe','#dcfce7','#fce7f3','#fef9c3','#ede9fe','#ffedd5']
-const TEXT_C = ['#1e40af','#166534','#9d174d','#854d0e','#5b21b6','#9a3412']
-
-function initials(name) {
-  return name.split(' ').slice(0,2).map(w=>w[0]).join('').toUpperCase()
-}
-
-export default function Home() {
+export default function Admin() {
   const router = useRouter()
+  const [autenticado, setAutenticado] = useState(false)
+  const [pinInput, setPinInput] = useState('')
+  const [pinError, setPinError] = useState(false)
+  const [tab, setTab] = useState('hoy')
   const [empleados, setEmpleados] = useState([])
   const [fichajes, setFichajes] = useState([])
-  const [seleccionado, setSeleccionado] = useState(null)
-  const [pin, setPin] = useState('')
-  const [estado, setEstado] = useState(null)
-  const [hora, setHora] = useState('')
-  const [fotoCapturada, setFotoCapturada] = useState(null)
-  const [esperandoFoto, setEsperandoFoto] = useState(false)
-  const [viendoHistorial, setViendoHistorial] = useState(false)
-  const [historialEmpleado, setHistorialEmpleado] = useState([])
-  const [empleadoActual, setEmpleadoActual] = useState(null)
-  const canvasRef = useRef(null)
-  const fileInputRef = useRef(null)
+  const [fichajesMes, setFichajesMes] = useState([])
+  const [fechaFiltro, setFechaFiltro] = useState(new Date().toISOString().slice(0,10))
+  const [mesFiltro, setMesFiltro] = useState(new Date().toISOString().slice(0,7))
+  const [nuevoNombre, setNuevoNombre] = useState('')
+  const [nuevoRol, setNuevoRol] = useState('')
+  const [nuevoPin, setNuevoPin] = useState('')
+  const [nuevoAdmin, setNuevoAdmin] = useState(false)
+  const [guardando, setGuardando] = useState(false)
+  const [fotoModal, setFotoModal] = useState(null)
+  const [tarifas, setTarifas] = useState({})
+  const [recargo, setRecargo] = useState(50)
+  const [horasJornada, setHorasJornada] = useState(8)
+  const [horaAlerta, setHoraAlerta] = useState('09:00')
+  const [emailAlerta, setEmailAlerta] = useState('')
 
   useEffect(() => {
-    cargarDatos()
-    const iv = setInterval(() => {
-      setHora(new Date().toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false }))
-    }, 1000)
-    setHora(new Date().toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false }))
-    return () => clearInterval(iv)
-  }, [])
+    if (autenticado) cargarDatos()
+  }, [autenticado, fechaFiltro])
+
+  useEffect(() => {
+    if (autenticado && tab === 'liquidacion') cargarFichajesMes()
+  }, [autenticado, tab, mesFiltro])
 
   async function cargarDatos() {
-    const { data: emps } = await supabase.from('empleados').select('*').eq('activo', true).eq('es_admin', false).order('nombre')
-    const { data: fich } = await supabase.from('fichajes').select('*').gte('hora', new Date().toISOString().slice(0,10)).order('hora', { ascending: false })
+    const { data: emps } = await supabase.from('empleados').select('*').eq('activo', true).order('nombre')
+    const { data: fich } = await supabase
+      .from('fichajes').select('*, empleados(nombre, rol)')
+      .gte('hora', fechaFiltro + 'T00:00:00').lte('hora', fechaFiltro + 'T23:59:59')
+      .order('hora', { ascending: false })
     setEmpleados(emps || [])
     setFichajes(fich || [])
   }
 
-  async function cargarHistorial(emp) {
-    const inicio = new Date()
-    inicio.setDate(1)
-    inicio.setHours(0,0,0,0)
+  async function cargarFichajesMes() {
+    const inicio = mesFiltro + '-01T00:00:00'
+    const fin = new Date(mesFiltro + '-01')
+    fin.setMonth(fin.getMonth() + 1)
     const { data } = await supabase
-      .from('fichajes')
-      .select('*')
-      .eq('empleado_id', emp.id)
-      .gte('hora', inicio.toISOString())
-      .order('hora', { ascending: false })
-    setHistorialEmpleado(data || [])
-    setEmpleadoActual(emp)
-    setViendoHistorial(true)
+      .from('fichajes').select('*, empleados(nombre, rol)')
+      .gte('hora', inicio).lte('hora', fin.toISOString().slice(0,10) + 'T23:59:59')
+      .order('hora', { ascending: true })
+    setFichajesMes(data || [])
   }
 
-  function calcularHorasMes(logs) {
-    const sorted = [...logs].sort((a,b) => new Date(a.hora)-new Date(b.hora))
+  function verificarPin() {
+    supabase.from('empleados').select('*').eq('pin', pinInput).eq('es_admin', true).then(({ data }) => {
+      if (data && data.length > 0) { setAutenticado(true); setPinError(false) }
+      else { setPinError(true); setPinInput(''); setTimeout(() => setPinError(false), 1500) }
+    })
+  }
+
+  async function agregarEmpleado() {
+    if (!nuevoNombre.trim() || !nuevoPin || nuevoPin.length !== 4) return
+    setGuardando(true)
+    await supabase.from('empleados').insert({ nombre: nuevoNombre.trim(), rol: nuevoRol.trim() || 'Empleado', pin: nuevoPin, es_admin: nuevoAdmin })
+    setNuevoNombre(''); setNuevoRol(''); setNuevoPin(''); setNuevoAdmin(false)
+    await cargarDatos(); setGuardando(false)
+  }
+
+  async function desactivarEmpleado(id) {
+    if (!confirm('Dar de baja este empleado?')) return
+    await supabase.from('empleados').update({ activo: false }).eq('id', id)
+    await cargarDatos()
+  }
+
+  function horasTrabajadas(empId) {
+    const logs = fichajes.filter(f => f.empleado_id === empId).sort((a,b) => new Date(a.hora)-new Date(b.hora))
     let total = 0
-    for (let i = 0; i < sorted.length - 1; i++) {
-      if (sorted[i].accion === 'entrada' && sorted[i+1].accion === 'salida') {
-        total += new Date(sorted[i+1].hora) - new Date(sorted[i].hora)
+    for (let i = 0; i < logs.length - 1; i++) {
+      if (logs[i].accion === 'entrada' && logs[i+1].accion === 'salida')
+        total += new Date(logs[i+1].hora) - new Date(logs[i].hora)
+    }
+    if (total === 0) return null
+    return `${Math.floor(total/3600000)}h ${Math.floor((total%3600000)/60000)}m`
+  }
+
+  function calcularLiquidacion(empId) {
+    const logs = fichajesMes.filter(f => f.empleado_id === empId).sort((a,b) => new Date(a.hora)-new Date(b.hora))
+    const dias = {}
+    for (let i = 0; i < logs.length - 1; i++) {
+      if (logs[i].accion === 'entrada' && logs[i+1].accion === 'salida') {
+        const dia = logs[i].hora.slice(0,10)
+        dias[dia] = (dias[dia] || 0) + (new Date(logs[i+1].hora) - new Date(logs[i].hora)) / 3600000
       }
     }
-    const h = Math.floor(total / 3600000)
-    const m = Math.floor((total % 3600000) / 60000)
-    return `${h}h ${m}m`
+    let hn = 0, he = 0
+    Object.values(dias).forEach(h => { if (h <= horasJornada) { hn += h } else { hn += horasJornada; he += h - horasJornada } })
+    const tarifa = tarifas[empId] || 0
+    const tn = Math.round(hn * tarifa)
+    const te = Math.round(he * tarifa * (1 + recargo/100))
+    return { dias: Object.keys(dias).length, hn: Math.round(hn*10)/10, he: Math.round(he*10)/10, tn, te, total: tn+te }
   }
 
-  function estaAdentro(empId) {
-    const logs = fichajes.filter(f => f.empleado_id === empId)
-    if (!logs.length) return false
-    return logs[0].accion === 'entrada'
+  function exportarExcel() {
+    let csv = 'Empleado,Rol,Dias,Hs normales,Hs extra,Total normal,Total extra,TOTAL\n'
+    empleados.filter(e => !e.es_admin).forEach(emp => {
+      const l = calcularLiquidacion(emp.id)
+      if (l.dias > 0 || tarifas[emp.id] > 0)
+        csv += `${emp.nombre},${emp.rol},${l.dias},${l.hn},${l.he},$${l.tn},$${l.te},$${l.total}\n`
+    })
+    const a = document.createElement('a')
+    a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8;' }))
+    a.download = `liquidacion-${mesFiltro}.csv`
+    a.click()
   }
 
-  function seleccionar(emp) {
-    setSeleccionado(emp)
-    setPin('')
-    setEstado(null)
-    setFotoCapturada(null)
-    setEsperandoFoto(false)
-    setViendoHistorial(false)
-  }
-
-  function presionarPin(digit) {
-    if (pin.length < 4) setPin(p => p + digit)
-  }
-
-  function borrarPin() {
-    setPin(p => p.slice(0, -1))
-  }
-
-  function handleFotoSeleccionada(e) {
-    const file = e.target.files[0]
-    if (!file) return
-    const reader = new FileReader()
-    reader.onload = (ev) => {
-      setFotoCapturada(ev.target.result)
-      setEsperandoFoto(false)
-    }
-    reader.readAsDataURL(file)
-  }
-
-  async function subirFoto(dataUrl, nombre) {
-    try {
-      const blob = await (await fetch(dataUrl)).blob()
-      const filename = `${nombre}-${Date.now()}.jpg`
-      const { error } = await supabase.storage.from('fichajes-fotos').upload(filename, blob, { contentType: 'image/jpeg' })
-      if (error) return null
-      const { data: urlData } = supabase.storage.from('fichajes-fotos').getPublicUrl(filename)
-      return urlData.publicUrl
-    } catch(e) { return null }
-  }
-
-  async function confirmar() {
-    if (pin.length < 4) return
-    if (pin !== seleccionado.pin) {
-      setEstado('error')
-      setPin('')
-      setTimeout(() => setEstado(null), 1500)
+  function verificarAlertas() {
+    const [hAlerta, mAlerta] = horaAlerta.split(':').map(Number)
+    const ahora = new Date()
+    const horaActual = ahora.getHours() * 60 + ahora.getMinutes()
+    const horaLimite = hAlerta * 60 + mAlerta
+    if (horaActual < horaLimite) {
+      alert(`Son las ${fmtHoraStr(ahora.toISOString())} — todavia no llegó la hora limite de ${horaAlerta}`)
       return
     }
-    if (!fotoCapturada) {
-      setEsperandoFoto(true)
-      setTimeout(() => fileInputRef.current && fileInputRef.current.click(), 100)
-      return
+    const empSinFichar = empleados.filter(emp => {
+      if (emp.es_admin) return false
+      const fichajesHoy = fichajes.filter(f => f.empleado_id === emp.id)
+      return fichajesHoy.length === 0
+    })
+    if (empSinFichar.length === 0) {
+      alert('Todos los empleados ficharon entrada hoy.')
+    } else {
+      alert(`Los siguientes empleados NO ficharon entrada:\n\n${empSinFichar.map(e => '• ' + e.nombre).join('\n')}`)
     }
-    setEstado('ubicacion')
-    navigator.geolocation.getCurrentPosition(
-      async (pos) => {
-        const dist = distancia(pos.coords.latitude, pos.coords.longitude, NEGOCIO_LAT, NEGOCIO_LNG)
-        if (dist > RADIO_METROS) {
-          setEstado('lejos')
-          setTimeout(() => { setEstado(null); setPin(''); setFotoCapturada(null) }, 3000)
-          return
-        }
-        let fotoUrl = null
-        if (fotoCapturada) fotoUrl = await subirFoto(fotoCapturada, seleccionado.nombre.replace(' ', '_'))
-        const accion = estaAdentro(seleccionado.id) ? 'salida' : 'entrada'
-        await supabase.from('fichajes').insert({
-          empleado_id: seleccionado.id, accion,
-          lat: pos.coords.latitude, lng: pos.coords.longitude, foto_url: fotoUrl
-        })
-        setEstado(accion === 'entrada' ? 'ok_entrada' : 'ok_salida')
-        await cargarDatos()
-        const empActualizado = seleccionado
-        setTimeout(async () => {
-          setSeleccionado(null); setPin(''); setEstado(null); setFotoCapturada(null)
-          await cargarHistorial(empActualizado)
-        }, 1500)
-      },
-      () => { setEstado('geo_error') },
-      { enableHighAccuracy: true, timeout: 10000 }
-    )
   }
 
-  function fmtFecha(iso) {
-    return new Date(iso).toLocaleDateString('es-AR', { weekday: 'short', day: 'numeric', month: 'short' })
+  function abrirMapa(lat, lng, nombre) {
+    window.open(`https://www.google.com/maps?q=${lat},${lng}&z=17&marker=${lat},${lng}`, '_blank')
   }
+
   function fmtHoraStr(iso) {
     return new Date(iso).toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit', hour12: false })
   }
+  function fmtPeso(n) { return '$' + n.toLocaleString('es-AR') }
 
-  const fecha = new Date().toLocaleDateString('es-AR', { weekday: 'long', day: 'numeric', month: 'long' })
-  const presentes = empleados.filter(e => estaAdentro(e.id)).length
+  const presentes = empleados.filter(emp => {
+    const logs = fichajes.filter(f => f.empleado_id === emp.id)
+    return logs.length > 0 && logs[0].accion === 'entrada'
+  }).length
 
-  // Agrupar historial por dia
-  const historialPorDia = {}
-  historialEmpleado.forEach(f => {
-    const dia = new Date(f.hora).toISOString().slice(0,10)
-    if (!historialPorDia[dia]) historialPorDia[dia] = []
-    historialPorDia[dia].push(f)
+  const noFicharonHoy = empleados.filter(emp => {
+    if (emp.es_admin) return false
+    return fichajes.filter(f => f.empleado_id === emp.id).length === 0
   })
+
+  if (!autenticado) {
+    return (
+      <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#f8fafc' }}>
+        <div style={{ background: '#fff', border: '1px solid #e2e8f0', borderRadius: 20, padding: '36px 32px', width: 300, textAlign: 'center' }}>
+          <div style={{ fontSize: 28, marginBottom: 8 }}>🔐</div>
+          <div style={{ fontWeight: 600, fontSize: 18, marginBottom: 4 }}>Panel Admin</div>
+          <div style={{ fontSize: 13, color: '#64748b', marginBottom: 24 }}>Ingresa tu PIN de administrador</div>
+          <input type="password" maxLength={4} value={pinInput} onChange={e => setPinInput(e.target.value.replace(/\D/g,'').slice(0,4))} onKeyDown={e => e.key === 'Enter' && verificarPin()} placeholder="PIN"
+            style={{ width: '100%', padding: '12px', textAlign: 'center', fontSize: 20, letterSpacing: 8, border: pinError ? '2px solid #dc2626' : '1px solid #e2e8f0', borderRadius: 10, marginBottom: 12, outline: 'none' }} />
+          {pinError && <div style={{ color: '#dc2626', fontSize: 13, marginBottom: 8 }}>PIN incorrecto</div>}
+          <button onClick={verificarPin} style={{ width: '100%', padding: '12px', background: '#1e293b', color: '#fff', border: 'none', borderRadius: 10, fontSize: 15, fontWeight: 500, cursor: 'pointer' }}>Entrar</button>
+          <button onClick={() => router.push('/')} style={{ marginTop: 12, background: 'none', border: 'none', color: '#94a3b8', fontSize: 13, cursor: 'pointer' }}>Volver al fichaje</button>
+        </div>
+      </div>
+    )
+  }
 
   return (
     <div style={{ minHeight: '100vh', background: '#f8fafc' }}>
-      <canvas ref={canvasRef} style={{ display: 'none' }} />
-      <input ref={fileInputRef} type="file" accept="image/*" capture="user" style={{ display: 'none' }} onChange={handleFotoSeleccionada} />
-
-      <div style={{ background: '#fff', borderBottom: '1px solid #e2e8f0', padding: '16px 24px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-        <div>
-          <div style={{ fontSize: 22, fontWeight: 600 }}>{hora}</div>
-          <div style={{ fontSize: 13, color: '#64748b', textTransform: 'capitalize' }}>{fecha}</div>
-        </div>
-        <div style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
-          <div style={{ background: '#f1f5f9', borderRadius: 10, padding: '8px 16px', textAlign: 'center' }}>
-            <div style={{ fontSize: 11, color: '#64748b' }}>Presentes</div>
-            <div style={{ fontSize: 20, fontWeight: 600, color: '#16a34a' }}>{presentes}</div>
+      {fotoModal && (
+        <div onClick={() => setFotoModal(null)} style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(0,0,0,0.8)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 }}>
+          <div style={{ maxWidth: 400, width: '90%' }}>
+            <img src={fotoModal.url} style={{ width: '100%', borderRadius: 12 }} alt="foto" />
+            <div style={{ color: '#fff', textAlign: 'center', marginTop: 12, fontSize: 14 }}>{fotoModal.nombre} — {fotoModal.accion} a las {fotoModal.hora}</div>
+            <div style={{ color: '#94a3b8', textAlign: 'center', marginTop: 4, fontSize: 12 }}>Toca para cerrar</div>
           </div>
-          <button onClick={() => router.push('/admin')} style={{ background: '#f1f5f9', border: 'none', borderRadius: 8, padding: '8px 14px', fontSize: 13, color: '#475569', cursor: 'pointer' }}>Admin →</button>
+        </div>
+      )}
+
+      <div style={{ background: '#1e293b', color: '#fff', padding: '16px 24px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <div style={{ fontWeight: 600, fontSize: 17 }}>Panel de administracion</div>
+        <div style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
+          <div style={{ fontSize: 13, color: '#94a3b8' }}>{presentes} presentes</div>
+          {noFicharonHoy.length > 0 && (
+            <div style={{ background: '#dc2626', color: '#fff', borderRadius: 20, padding: '2px 10px', fontSize: 12 }}>
+              {noFicharonHoy.length} sin fichar
+            </div>
+          )}
+          <button onClick={() => router.push('/')} style={{ background: 'rgba(255,255,255,0.1)', border: 'none', color: '#fff', borderRadius: 8, padding: '7px 14px', fontSize: 13, cursor: 'pointer' }}>Fichaje</button>
         </div>
       </div>
 
-      {/* Historial personal */}
-      {viendoHistorial && empleadoActual && (
-        <div style={{ maxWidth: 500, margin: '0 auto', padding: '24px' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 20 }}>
-            <button onClick={() => { setViendoHistorial(false); setEmpleadoActual(null) }}
-              style={{ background: 'none', border: 'none', fontSize: 20, cursor: 'pointer', color: '#475569' }}>←</button>
-            <div>
-              <div style={{ fontWeight: 600, fontSize: 17 }}>Mis horas — {empleadoActual.nombre}</div>
-              <div style={{ fontSize: 13, color: '#64748b' }}>
-                Este mes: {calcularHorasMes(historialEmpleado)}
-              </div>
-            </div>
-          </div>
-
-          {Object.keys(historialPorDia).sort((a,b) => b.localeCompare(a)).map(dia => {
-            const logs = historialPorDia[dia].sort((a,b) => new Date(a.hora)-new Date(b.hora))
-            let horasDia = 0
-            for (let i = 0; i < logs.length-1; i++) {
-              if (logs[i].accion==='entrada' && logs[i+1].accion==='salida') {
-                horasDia += new Date(logs[i+1].hora) - new Date(logs[i].hora)
-              }
-            }
-            const h = Math.floor(horasDia/3600000)
-            const m = Math.floor((horasDia%3600000)/60000)
-            return (
-              <div key={dia} style={{ background: '#fff', border: '1px solid #e2e8f0', borderRadius: 12, padding: '14px 16px', marginBottom: 10 }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
-                  <div style={{ fontWeight: 500, fontSize: 14, textTransform: 'capitalize' }}>{fmtFecha(dia+'T12:00:00')}</div>
-                  {horasDia > 0 && <span style={{ background: '#dbeafe', color: '#1e40af', padding: '2px 10px', borderRadius: 20, fontSize: 12 }}>{h}h {m}m</span>}
-                </div>
-                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-                  {logs.map(l => (
-                    <span key={l.id} style={{ padding: '3px 10px', borderRadius: 8, fontSize: 13, background: l.accion==='entrada'?'#dcfce7':'#fee2e2', color: l.accion==='entrada'?'#166534':'#991b1b' }}>
-                      {l.accion==='entrada'?'Entrada':'Salida'} {fmtHoraStr(l.hora)}
-                    </span>
-                  ))}
-                </div>
-              </div>
-            )
-          })}
-          {Object.keys(historialPorDia).length === 0 && (
-            <div style={{ textAlign: 'center', padding: '3rem', color: '#94a3b8', fontSize: 14 }}>Sin registros este mes.</div>
-          )}
+      <div style={{ maxWidth: 800, margin: '0 auto', padding: '24px' }}>
+        <div style={{ display: 'flex', gap: 4, marginBottom: 24, borderBottom: '1px solid #e2e8f0', overflowX: 'auto' }}>
+          {[['hoy','Registros'],['resumen','Resumen'],['alertas','Alertas'],['liquidacion','Liquidacion'],['empleados','Empleados']].map(([key,label]) => (
+            <button key={key} onClick={() => setTab(key)} style={{ padding: '10px 14px', border: 'none', background: 'none', fontSize: 14, fontWeight: tab===key?600:400, color: tab===key?'#1e293b':'#64748b', borderBottom: tab===key?'2px solid #1e293b':'2px solid transparent', marginBottom: -1, cursor: 'pointer', whiteSpace: 'nowrap' }}>
+              {label}
+            </button>
+          ))}
         </div>
-      )}
 
-      {/* Grid empleados */}
-      {!seleccionado && !viendoHistorial && (
-        <div style={{ padding: '24px', maxWidth: 700, margin: '0 auto' }}>
-          <div style={{ fontSize: 15, color: '#64748b', marginBottom: 16 }}>Toca tu nombre para fichar</div>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(150px, 1fr))', gap: 12 }}>
-            {empleados.map((emp, i) => {
-              const dentro = estaAdentro(emp.id)
-              const ci = i % COLORS.length
-              return (
-                <div key={emp.id} style={{ background: '#fff', border: dentro ? '2px solid #16a34a' : '1px solid #e2e8f0', borderRadius: 14, padding: '20px 12px', textAlign: 'center' }}>
-                  <div onClick={() => seleccionar(emp)} style={{ cursor: 'pointer' }}>
-                    <div style={{ width: 48, height: 48, borderRadius: '50%', background: COLORS[ci], color: TEXT_C[ci], display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 600, fontSize: 16, margin: '0 auto 10px' }}>
-                      {initials(emp.nombre)}
-                    </div>
-                    <div style={{ fontWeight: 500, fontSize: 14 }}>{emp.nombre}</div>
-                    <div style={{ fontSize: 12, color: '#94a3b8', marginTop: 2 }}>{emp.rol}</div>
-                    <div style={{ marginTop: 8, display: 'inline-block', padding: '3px 10px', borderRadius: 20, fontSize: 12, background: dentro ? '#dcfce7' : '#f1f5f9', color: dentro ? '#166534' : '#94a3b8' }}>
-                      {dentro ? 'Presente' : 'Fuera'}
-                    </div>
+        {(tab === 'hoy' || tab === 'resumen') && (
+          <div style={{ display: 'flex', gap: 10, marginBottom: 20 }}>
+            <input type="date" value={fechaFiltro} onChange={e => setFechaFiltro(e.target.value)}
+              style={{ border: '1px solid #e2e8f0', borderRadius: 8, padding: '6px 10px', fontSize: 13 }} />
+            <button onClick={cargarDatos} style={{ background: '#f1f5f9', border: '1px solid #e2e8f0', borderRadius: 8, padding: '6px 12px', fontSize: 13, cursor: 'pointer' }}>Actualizar</button>
+          </div>
+        )}
+
+        {tab === 'hoy' && (
+          <div style={{ background: '#fff', border: '1px solid #e2e8f0', borderRadius: 14 }}>
+            {fichajes.length === 0 && <div style={{ padding: '3rem', textAlign: 'center', color: '#94a3b8', fontSize: 14 }}>Sin registros.</div>}
+            {fichajes.map(f => (
+              <div key={f.id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '12px 16px', borderBottom: '1px solid #f1f5f9' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                  {f.foto_url ? (
+                    <img src={f.foto_url} onClick={() => setFotoModal({ url: f.foto_url, nombre: f.empleados?.nombre, accion: f.accion, hora: fmtHoraStr(f.hora) })}
+                      style={{ width: 44, height: 44, borderRadius: 8, objectFit: 'cover', cursor: 'pointer', border: '1px solid #e2e8f0' }} alt="foto" />
+                  ) : (
+                    <div style={{ width: 44, height: 44, borderRadius: 8, background: '#f1f5f9', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 18 }}>👤</div>
+                  )}
+                  <div>
+                    <div style={{ fontWeight: 500, fontSize: 14 }}>{f.empleados?.nombre}</div>
+                    <div style={{ fontSize: 12, color: '#94a3b8' }}>{f.empleados?.rol}</div>
                   </div>
-                  <button onClick={() => cargarHistorial(emp)}
-                    style={{ marginTop: 8, width: '100%', background: 'none', border: '1px solid #e2e8f0', borderRadius: 8, padding: '5px 0', fontSize: 12, color: '#64748b', cursor: 'pointer' }}>
-                    Ver mis horas
-                  </button>
                 </div>
-              )
-            })}
+                <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                  <span style={{ padding: '3px 10px', borderRadius: 20, fontSize: 12, background: f.accion==='entrada'?'#dcfce7':'#fee2e2', color: f.accion==='entrada'?'#166534':'#991b1b' }}>{f.accion}</span>
+                  <span style={{ fontFamily: 'monospace', fontSize: 14, color: '#475569' }}>{fmtHoraStr(f.hora)}</span>
+                  {f.lat && f.lng && (
+                    <button onClick={() => abrirMapa(f.lat, f.lng, f.empleados?.nombre)}
+                      style={{ background: '#dbeafe', border: 'none', color: '#1e40af', borderRadius: 8, padding: '4px 10px', fontSize: 12, cursor: 'pointer' }}>
+                      Ver mapa
+                    </button>
+                  )}
+                </div>
+              </div>
+            ))}
           </div>
-          {empleados.length === 0 && (
-            <div style={{ textAlign: 'center', padding: '3rem', color: '#94a3b8', fontSize: 14 }}>No hay empleados cargados.</div>
-          )}
-        </div>
-      )}
+        )}
 
-      {/* PIN + foto */}
-      {seleccionado && !viendoHistorial && (
-        <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', minHeight: 'calc(100vh - 73px)', padding: '24px' }}>
-          <div style={{ background: '#fff', border: '1px solid #e2e8f0', borderRadius: 20, padding: '32px 28px', width: '100%', maxWidth: 340, textAlign: 'center' }}>
-            <div style={{ width: 56, height: 56, borderRadius: '50%', background: COLORS[0], color: TEXT_C[0], display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 600, fontSize: 18, margin: '0 auto 12px' }}>
-              {initials(seleccionado.nombre)}
-            </div>
-            <div style={{ fontWeight: 600, fontSize: 17 }}>{seleccionado.nombre}</div>
-            <div style={{ fontSize: 13, color: '#64748b', marginBottom: 20 }}>
-              {estaAdentro(seleccionado.id) ? 'Registrar salida' : 'Registrar entrada'}
-            </div>
+        {tab === 'resumen' && (
+          <div style={{ background: '#fff', border: '1px solid #e2e8f0', borderRadius: 14, overflow: 'hidden' }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 14 }}>
+              <thead>
+                <tr style={{ background: '#f8fafc' }}>
+                  <th style={{ padding: '12px 16px', textAlign: 'left', fontWeight: 500, color: '#64748b', fontSize: 12, textTransform: 'uppercase' }}>Empleado</th>
+                  <th style={{ padding: '12px 16px', textAlign: 'left', fontWeight: 500, color: '#64748b', fontSize: 12, textTransform: 'uppercase' }}>Registros</th>
+                  <th style={{ padding: '12px 16px', textAlign: 'left', fontWeight: 500, color: '#64748b', fontSize: 12, textTransform: 'uppercase' }}>Total</th>
+                </tr>
+              </thead>
+              <tbody>
+                {empleados.filter(e => !e.es_admin).map(emp => {
+                  const logs = fichajes.filter(f => f.empleado_id === emp.id).sort((a,b) => new Date(a.hora)-new Date(b.hora))
+                  const horas = horasTrabajadas(emp.id)
+                  if (!logs.length) return null
+                  return (
+                    <tr key={emp.id} style={{ borderTop: '1px solid #f1f5f9' }}>
+                      <td style={{ padding: '12px 16px' }}>
+                        <div style={{ fontWeight: 500 }}>{emp.nombre}</div>
+                        <div style={{ fontSize: 12, color: '#94a3b8' }}>{emp.rol}</div>
+                      </td>
+                      <td style={{ padding: '12px 16px' }}>
+                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+                          {logs.map(l => (
+                            <span key={l.id} style={{ padding: '2px 8px', borderRadius: 6, fontSize: 12, background: l.accion==='entrada'?'#dcfce7':'#fee2e2', color: l.accion==='entrada'?'#166534':'#991b1b', fontFamily: 'monospace' }}>
+                              {l.accion==='entrada'?'E':'S'} {fmtHoraStr(l.hora)}
+                            </span>
+                          ))}
+                        </div>
+                      </td>
+                      <td style={{ padding: '12px 16px' }}>
+                        {horas ? <span style={{ background: '#dbeafe', color: '#1e40af', padding: '3px 10px', borderRadius: 20, fontSize: 13 }}>{horas}</span> : <span style={{ color: '#94a3b8' }}>—</span>}
+                      </td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
 
-            {esperandoFoto && !fotoCapturada && (
-              <div style={{ marginBottom: 16, padding: '16px', background: '#f1f5f9', borderRadius: 10 }}>
-                <div style={{ fontSize: 14, color: '#475569', marginBottom: 12 }}>Saca una selfie para continuar</div>
-                <button onClick={() => fileInputRef.current && fileInputRef.current.click()}
-                  style={{ width: '100%', padding: '12px', background: '#1e293b', color: '#fff', border: 'none', borderRadius: 10, fontSize: 14, fontWeight: 500, cursor: 'pointer' }}>
-                  Abrir camara
-                </button>
+        {tab === 'alertas' && (
+          <div>
+            {noFicharonHoy.length > 0 && (
+              <div style={{ background: '#fef2f2', border: '1px solid #fca5a5', borderRadius: 14, padding: '16px 20px', marginBottom: 16 }}>
+                <div style={{ fontWeight: 500, color: '#dc2626', marginBottom: 8 }}>Sin fichar hoy ({fechaFiltro})</div>
+                {noFicharonHoy.map(emp => (
+                  <div key={emp.id} style={{ fontSize: 14, color: '#475569', padding: '4px 0' }}>• {emp.nombre} — {emp.rol}</div>
+                ))}
               </div>
             )}
-
-            {fotoCapturada && (
-              <div style={{ marginBottom: 16 }}>
-                <img src={fotoCapturada} style={{ width: '100%', borderRadius: 10, maxHeight: 200, objectFit: 'cover' }} alt="foto" />
-                <button onClick={() => { setFotoCapturada(null); setEsperandoFoto(false) }}
-                  style={{ marginTop: 8, background: 'none', border: 'none', color: '#94a3b8', fontSize: 12, cursor: 'pointer' }}>
-                  Sacar otra foto
-                </button>
+            {noFicharonHoy.length === 0 && (
+              <div style={{ background: '#f0fdf4', border: '1px solid #86efac', borderRadius: 14, padding: '16px 20px', marginBottom: 16 }}>
+                <div style={{ fontWeight: 500, color: '#16a34a' }}>Todos ficharon entrada hoy</div>
               </div>
             )}
+            <div style={{ background: '#fff', border: '1px solid #e2e8f0', borderRadius: 14, padding: '20px' }}>
+              <div style={{ fontWeight: 500, fontSize: 15, marginBottom: 16 }}>Verificar ausencias manualmente</div>
+              <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+                <div>
+                  <div style={{ fontSize: 12, color: '#64748b', marginBottom: 4 }}>Hora limite de entrada</div>
+                  <input type="time" value={horaAlerta} onChange={e => setHoraAlerta(e.target.value)}
+                    style={{ border: '1px solid #e2e8f0', borderRadius: 8, padding: '6px 10px', fontSize: 14 }} />
+                </div>
+                <button onClick={verificarAlertas}
+                  style={{ marginTop: 20, background: '#1e293b', color: '#fff', border: 'none', borderRadius: 9, padding: '10px 20px', fontSize: 14, fontWeight: 500, cursor: 'pointer' }}>
+                  Verificar ahora
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
 
-            <div style={{ display: 'flex', justifyContent: 'center', gap: 14, marginBottom: 20 }}>
-              {[0,1,2,3].map(i => (
-                <div key={i} style={{ width: 14, height: 14, borderRadius: '50%', background: i < pin.length ? '#334155' : '#e2e8f0' }} />
+        {tab === 'liquidacion' && (
+          <div>
+            <div style={{ background: '#fff', border: '1px solid #e2e8f0', borderRadius: 14, padding: '20px', marginBottom: 16 }}>
+              <div style={{ fontWeight: 500, fontSize: 15, marginBottom: 16 }}>Configuracion</div>
+              <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', marginBottom: 16 }}>
+                <div>
+                  <div style={{ fontSize: 12, color: '#64748b', marginBottom: 4 }}>Mes</div>
+                  <input type="month" value={mesFiltro} onChange={e => setMesFiltro(e.target.value)}
+                    style={{ border: '1px solid #e2e8f0', borderRadius: 8, padding: '6px 10px', fontSize: 14 }} />
+                </div>
+                <div>
+                  <div style={{ fontSize: 12, color: '#64748b', marginBottom: 4 }}>Jornada normal (hs)</div>
+                  <input type="number" value={horasJornada} onChange={e => setHorasJornada(Number(e.target.value))} min={1} max={12}
+                    style={{ width: 80, border: '1px solid #e2e8f0', borderRadius: 8, padding: '6px 10px', fontSize: 14 }} />
+                </div>
+                <div>
+                  <div style={{ fontSize: 12, color: '#64748b', marginBottom: 4 }}>Recargo extra</div>
+                  <div style={{ display: 'flex', gap: 8 }}>
+                    <button onClick={() => setRecargo(50)} style={{ padding: '6px 14px', borderRadius: 8, border: '1px solid #e2e8f0', background: recargo===50?'#1e293b':'#f8fafc', color: recargo===50?'#fff':'#475569', fontSize: 14, cursor: 'pointer' }}>50%</button>
+                    <button onClick={() => setRecargo(100)} style={{ padding: '6px 14px', borderRadius: 8, border: '1px solid #e2e8f0', background: recargo===100?'#1e293b':'#f8fafc', color: recargo===100?'#fff':'#475569', fontSize: 14, cursor: 'pointer' }}>100%</button>
+                  </div>
+                </div>
+              </div>
+              <div style={{ fontWeight: 500, fontSize: 14, marginBottom: 10 }}>Valor por hora</div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                {empleados.filter(e => !e.es_admin).map(emp => (
+                  <div key={emp.id} style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                    <span style={{ fontSize: 14, minWidth: 150 }}>{emp.nombre}</span>
+                    <span style={{ fontSize: 14, color: '#64748b' }}>$</span>
+                    <input type="number" value={tarifas[emp.id] || ''} onChange={e => setTarifas(t => ({ ...t, [emp.id]: Number(e.target.value) }))} placeholder="0" min={0}
+                      style={{ width: 100, border: '1px solid #e2e8f0', borderRadius: 8, padding: '6px 10px', fontSize: 14 }} />
+                    <span style={{ fontSize: 12, color: '#94a3b8' }}>/ hora</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+            <div style={{ background: '#fff', border: '1px solid #e2e8f0', borderRadius: 14, overflow: 'hidden', marginBottom: 16 }}>
+              <div style={{ padding: '16px 20px', borderBottom: '1px solid #f1f5f9', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <div style={{ fontWeight: 500, fontSize: 15 }}>Liquidacion — {new Date(mesFiltro+'-02').toLocaleDateString('es-AR',{month:'long',year:'numeric'})}</div>
+                <button onClick={exportarExcel} style={{ background: '#16a34a', color: '#fff', border: 'none', borderRadius: 8, padding: '8px 16px', fontSize: 13, fontWeight: 500, cursor: 'pointer' }}>Exportar Excel</button>
+              </div>
+              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 14 }}>
+                <thead>
+                  <tr style={{ background: '#f8fafc' }}>
+                    <th style={{ padding: '10px 16px', textAlign: 'left', fontWeight: 500, color: '#64748b', fontSize: 12, textTransform: 'uppercase' }}>Empleado</th>
+                    <th style={{ padding: '10px 16px', textAlign: 'center', fontWeight: 500, color: '#64748b', fontSize: 12, textTransform: 'uppercase' }}>Dias</th>
+                    <th style={{ padding: '10px 16px', textAlign: 'center', fontWeight: 500, color: '#64748b', fontSize: 12, textTransform: 'uppercase' }}>Hs norm.</th>
+                    <th style={{ padding: '10px 16px', textAlign: 'center', fontWeight: 500, color: '#64748b', fontSize: 12, textTransform: 'uppercase' }}>Hs extra</th>
+                    <th style={{ padding: '10px 16px', textAlign: 'right', fontWeight: 500, color: '#64748b', fontSize: 12, textTransform: 'uppercase' }}>Total</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {empleados.filter(e => !e.es_admin).map(emp => {
+                    const l = calcularLiquidacion(emp.id)
+                    const tarifa = tarifas[emp.id] || 0
+                    if (l.dias === 0 && !tarifa) return null
+                    return (
+                      <tr key={emp.id} style={{ borderTop: '1px solid #f1f5f9' }}>
+                        <td style={{ padding: '12px 16px' }}>
+                          <div style={{ fontWeight: 500 }}>{emp.nombre}</div>
+                          <div style={{ fontSize: 12, color: '#94a3b8' }}>{tarifa > 0 ? `${fmtPeso(tarifa)}/h` : 'Sin tarifa'}</div>
+                        </td>
+                        <td style={{ padding: '12px 16px', textAlign: 'center' }}>
+                          <span style={{ background: '#f1f5f9', padding: '2px 10px', borderRadius: 20, fontSize: 13 }}>{l.dias}</span>
+                        </td>
+                        <td style={{ padding: '12px 16px', textAlign: 'center' }}>
+                          <div>{l.hn}h</div>
+                          {tarifa > 0 && <div style={{ fontSize: 11, color: '#94a3b8' }}>{fmtPeso(l.tn)}</div>}
+                        </td>
+                        <td style={{ padding: '12px 16px', textAlign: 'center' }}>
+                          <div style={{ color: l.he > 0 ? '#d97706' : '#94a3b8' }}>{l.he}h</div>
+                          {tarifa > 0 && l.he > 0 && <div style={{ fontSize: 11, color: '#d97706' }}>{fmtPeso(l.te)} (+{recargo}%)</div>}
+                        </td>
+                        <td style={{ padding: '12px 16px', textAlign: 'right' }}>
+                          {tarifa > 0 ? <span style={{ fontWeight: 600, fontSize: 15, color: '#16a34a' }}>{fmtPeso(l.total)}</span> : <span style={{ fontSize: 12, color: '#94a3b8' }}>Cargar tarifa</span>}
+                        </td>
+                      </tr>
+                    )
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+
+        {tab === 'empleados' && (
+          <div>
+            <div style={{ background: '#fff', border: '1px solid #e2e8f0', borderRadius: 14, padding: '20px', marginBottom: 20 }}>
+              <div style={{ fontWeight: 500, fontSize: 15, marginBottom: 16 }}>Agregar empleado</div>
+              <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: 10 }}>
+                <input value={nuevoNombre} onChange={e => setNuevoNombre(e.target.value)} placeholder="Nombre completo" style={{ flex: 2, minWidth: 160, padding: '8px 12px', border: '1px solid #e2e8f0', borderRadius: 8, fontSize: 14 }} />
+                <input value={nuevoRol} onChange={e => setNuevoRol(e.target.value)} placeholder="Rol" style={{ flex: 1, minWidth: 120, padding: '8px 12px', border: '1px solid #e2e8f0', borderRadius: 8, fontSize: 14 }} />
+                <input value={nuevoPin} onChange={e => setNuevoPin(e.target.value.replace(/\D/g,'').slice(0,4))} placeholder="PIN (4 digitos)" maxLength={4} style={{ flex: 1, minWidth: 120, padding: '8px 12px', border: '1px solid #e2e8f0', borderRadius: 8, fontSize: 14, letterSpacing: 4 }} />
+              </div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12 }}>
+                <input type="checkbox" id="esAdmin" checked={nuevoAdmin} onChange={e => setNuevoAdmin(e.target.checked)} />
+                <label htmlFor="esAdmin" style={{ fontSize: 13, color: '#475569' }}>Es administrador</label>
+              </div>
+              <button onClick={agregarEmpleado} disabled={guardando || !nuevoNombre || nuevoPin.length < 4}
+                style={{ background: '#1e293b', color: '#fff', border: 'none', borderRadius: 9, padding: '10px 20px', fontSize: 14, fontWeight: 500, cursor: 'pointer', opacity: (!nuevoNombre || nuevoPin.length < 4) ? 0.4 : 1 }}>
+                {guardando ? 'Guardando...' : 'Agregar'}
+              </button>
+            </div>
+            <div style={{ background: '#fff', border: '1px solid #e2e8f0', borderRadius: 14, overflow: 'hidden' }}>
+              {empleados.map(emp => (
+                <div key={emp.id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '14px 16px', borderBottom: '1px solid #f1f5f9' }}>
+                  <div>
+                    <span style={{ fontWeight: 500, fontSize: 14 }}>{emp.nombre}</span>
+                    <span style={{ fontSize: 12, color: '#94a3b8', marginLeft: 8 }}>{emp.rol}</span>
+                    {emp.es_admin && <span style={{ marginLeft: 8, background: '#ede9fe', color: '#5b21b6', fontSize: 11, padding: '2px 7px', borderRadius: 20 }}>Admin</span>}
+                  </div>
+                  <button onClick={() => desactivarEmpleado(emp.id)} style={{ background: 'none', border: '1px solid #fca5a5', color: '#dc2626', borderRadius: 7, padding: '5px 10px', fontSize: 12, cursor: 'pointer' }}>Dar de baja</button>
+                </div>
               ))}
             </div>
-
-            {estado === 'error' && <div style={{ color: '#dc2626', fontSize: 13, marginBottom: 12 }}>PIN incorrecto</div>}
-            {estado === 'ubicacion' && <div style={{ color: '#2563eb', fontSize: 13, marginBottom: 12 }}>Verificando ubicacion...</div>}
-            {estado === 'lejos' && <div style={{ color: '#d97706', fontSize: 13, marginBottom: 12 }}>Estas muy lejos del negocio</div>}
-            {estado === 'geo_error' && <div style={{ color: '#dc2626', fontSize: 13, marginBottom: 12 }}>Activa la ubicacion en tu celu</div>}
-            {estado === 'ok_entrada' && <div style={{ color: '#16a34a', fontSize: 14, fontWeight: 500, marginBottom: 12 }}>Entrada registrada</div>}
-            {estado === 'ok_salida' && <div style={{ color: '#dc2626', fontSize: 14, fontWeight: 500, marginBottom: 12 }}>Salida registrada</div>}
-
-            {!esperandoFoto && (
-              <>
-                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 10, marginBottom: 16 }}>
-                  {[1,2,3,4,5,6,7,8,9].map(n => (
-                    <button key={n} onClick={() => presionarPin(String(n))} disabled={!!estado && estado !== 'error'}
-                      style={{ padding: '16px', fontSize: 20, fontWeight: 500, background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 12, cursor: 'pointer' }}>{n}</button>
-                  ))}
-                  <button onClick={() => seleccionar(null)} style={{ padding: '16px', fontSize: 13, color: '#94a3b8', background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 12, cursor: 'pointer' }}>Atras</button>
-                  <button onClick={() => presionarPin('0')} disabled={!!estado && estado !== 'error'}
-                    style={{ padding: '16px', fontSize: 20, fontWeight: 500, background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 12, cursor: 'pointer' }}>0</button>
-                  <button onClick={borrarPin} style={{ padding: '16px', fontSize: 18, color: '#64748b', background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 12, cursor: 'pointer' }}>X</button>
-                </div>
-                <button onClick={confirmar} disabled={pin.length < 4 || (!!estado && estado !== 'error')}
-                  style={{ width: '100%', padding: '14px', background: pin.length === 4 && !estado ? (estaAdentro(seleccionado.id) ? '#dc2626' : '#16a34a') : '#e2e8f0', color: pin.length === 4 && !estado ? '#fff' : '#94a3b8', border: 'none', borderRadius: 12, fontSize: 15, fontWeight: 600, cursor: pin.length === 4 ? 'pointer' : 'default' }}>
-                  {estaAdentro(seleccionado.id) ? 'Registrar salida' : 'Registrar entrada'}
-                </button>
-              </>
-            )}
           </div>
-        </div>
-      )}
+        )}
+      </div>
     </div>
   )
 }
