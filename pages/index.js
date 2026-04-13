@@ -31,6 +31,9 @@ export default function Home() {
   const [hora, setHora] = useState('')
   const [fotoCapturada, setFotoCapturada] = useState(null)
   const [esperandoFoto, setEsperandoFoto] = useState(false)
+  const [viendoHistorial, setViendoHistorial] = useState(false)
+  const [historialEmpleado, setHistorialEmpleado] = useState([])
+  const [empleadoActual, setEmpleadoActual] = useState(null)
   const canvasRef = useRef(null)
   const fileInputRef = useRef(null)
 
@@ -50,6 +53,34 @@ export default function Home() {
     setFichajes(fich || [])
   }
 
+  async function cargarHistorial(emp) {
+    const inicio = new Date()
+    inicio.setDate(1)
+    inicio.setHours(0,0,0,0)
+    const { data } = await supabase
+      .from('fichajes')
+      .select('*')
+      .eq('empleado_id', emp.id)
+      .gte('hora', inicio.toISOString())
+      .order('hora', { ascending: false })
+    setHistorialEmpleado(data || [])
+    setEmpleadoActual(emp)
+    setViendoHistorial(true)
+  }
+
+  function calcularHorasMes(logs) {
+    const sorted = [...logs].sort((a,b) => new Date(a.hora)-new Date(b.hora))
+    let total = 0
+    for (let i = 0; i < sorted.length - 1; i++) {
+      if (sorted[i].accion === 'entrada' && sorted[i+1].accion === 'salida') {
+        total += new Date(sorted[i+1].hora) - new Date(sorted[i].hora)
+      }
+    }
+    const h = Math.floor(total / 3600000)
+    const m = Math.floor((total % 3600000) / 60000)
+    return `${h}h ${m}m`
+  }
+
   function estaAdentro(empId) {
     const logs = fichajes.filter(f => f.empleado_id === empId)
     if (!logs.length) return false
@@ -62,6 +93,7 @@ export default function Home() {
     setEstado(null)
     setFotoCapturada(null)
     setEsperandoFoto(false)
+    setViendoHistorial(false)
   }
 
   function presionarPin(digit) {
@@ -87,15 +119,11 @@ export default function Home() {
     try {
       const blob = await (await fetch(dataUrl)).blob()
       const filename = `${nombre}-${Date.now()}.jpg`
-      const { error } = await supabase.storage
-        .from('fichajes-fotos')
-        .upload(filename, blob, { contentType: 'image/jpeg' })
+      const { error } = await supabase.storage.from('fichajes-fotos').upload(filename, blob, { contentType: 'image/jpeg' })
       if (error) return null
       const { data: urlData } = supabase.storage.from('fichajes-fotos').getPublicUrl(filename)
       return urlData.publicUrl
-    } catch(e) {
-      return null
-    }
+    } catch(e) { return null }
   }
 
   async function confirmar() {
@@ -121,42 +149,47 @@ export default function Home() {
           return
         }
         let fotoUrl = null
-        if (fotoCapturada) {
-          fotoUrl = await subirFoto(fotoCapturada, seleccionado.nombre.replace(' ', '_'))
-        }
+        if (fotoCapturada) fotoUrl = await subirFoto(fotoCapturada, seleccionado.nombre.replace(' ', '_'))
         const accion = estaAdentro(seleccionado.id) ? 'salida' : 'entrada'
         await supabase.from('fichajes').insert({
-          empleado_id: seleccionado.id,
-          accion,
-          lat: pos.coords.latitude,
-          lng: pos.coords.longitude,
-          foto_url: fotoUrl
+          empleado_id: seleccionado.id, accion,
+          lat: pos.coords.latitude, lng: pos.coords.longitude, foto_url: fotoUrl
         })
         setEstado(accion === 'entrada' ? 'ok_entrada' : 'ok_salida')
         await cargarDatos()
-        setTimeout(() => {
+        const empActualizado = seleccionado
+        setTimeout(async () => {
           setSeleccionado(null); setPin(''); setEstado(null); setFotoCapturada(null)
-        }, 2000)
+          await cargarHistorial(empActualizado)
+        }, 1500)
       },
       () => { setEstado('geo_error') },
       { enableHighAccuracy: true, timeout: 10000 }
     )
   }
 
+  function fmtFecha(iso) {
+    return new Date(iso).toLocaleDateString('es-AR', { weekday: 'short', day: 'numeric', month: 'short' })
+  }
+  function fmtHoraStr(iso) {
+    return new Date(iso).toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit', hour12: false })
+  }
+
   const fecha = new Date().toLocaleDateString('es-AR', { weekday: 'long', day: 'numeric', month: 'long' })
   const presentes = empleados.filter(e => estaAdentro(e.id)).length
+
+  // Agrupar historial por dia
+  const historialPorDia = {}
+  historialEmpleado.forEach(f => {
+    const dia = new Date(f.hora).toISOString().slice(0,10)
+    if (!historialPorDia[dia]) historialPorDia[dia] = []
+    historialPorDia[dia].push(f)
+  })
 
   return (
     <div style={{ minHeight: '100vh', background: '#f8fafc' }}>
       <canvas ref={canvasRef} style={{ display: 'none' }} />
-      <input
-        ref={fileInputRef}
-        type="file"
-        accept="image/*"
-        capture="user"
-        style={{ display: 'none' }}
-        onChange={handleFotoSeleccionada}
-      />
+      <input ref={fileInputRef} type="file" accept="image/*" capture="user" style={{ display: 'none' }} onChange={handleFotoSeleccionada} />
 
       <div style={{ background: '#fff', borderBottom: '1px solid #e2e8f0', padding: '16px 24px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
         <div>
@@ -168,13 +201,58 @@ export default function Home() {
             <div style={{ fontSize: 11, color: '#64748b' }}>Presentes</div>
             <div style={{ fontSize: 20, fontWeight: 600, color: '#16a34a' }}>{presentes}</div>
           </div>
-          <button onClick={() => router.push('/admin')} style={{ background: '#f1f5f9', border: 'none', borderRadius: 8, padding: '8px 14px', fontSize: 13, color: '#475569', cursor: 'pointer' }}>
-            Admin →
-          </button>
+          <button onClick={() => router.push('/admin')} style={{ background: '#f1f5f9', border: 'none', borderRadius: 8, padding: '8px 14px', fontSize: 13, color: '#475569', cursor: 'pointer' }}>Admin →</button>
         </div>
       </div>
 
-      {!seleccionado && (
+      {/* Historial personal */}
+      {viendoHistorial && empleadoActual && (
+        <div style={{ maxWidth: 500, margin: '0 auto', padding: '24px' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 20 }}>
+            <button onClick={() => { setViendoHistorial(false); setEmpleadoActual(null) }}
+              style={{ background: 'none', border: 'none', fontSize: 20, cursor: 'pointer', color: '#475569' }}>←</button>
+            <div>
+              <div style={{ fontWeight: 600, fontSize: 17 }}>Mis horas — {empleadoActual.nombre}</div>
+              <div style={{ fontSize: 13, color: '#64748b' }}>
+                Este mes: {calcularHorasMes(historialEmpleado)}
+              </div>
+            </div>
+          </div>
+
+          {Object.keys(historialPorDia).sort((a,b) => b.localeCompare(a)).map(dia => {
+            const logs = historialPorDia[dia].sort((a,b) => new Date(a.hora)-new Date(b.hora))
+            let horasDia = 0
+            for (let i = 0; i < logs.length-1; i++) {
+              if (logs[i].accion==='entrada' && logs[i+1].accion==='salida') {
+                horasDia += new Date(logs[i+1].hora) - new Date(logs[i].hora)
+              }
+            }
+            const h = Math.floor(horasDia/3600000)
+            const m = Math.floor((horasDia%3600000)/60000)
+            return (
+              <div key={dia} style={{ background: '#fff', border: '1px solid #e2e8f0', borderRadius: 12, padding: '14px 16px', marginBottom: 10 }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+                  <div style={{ fontWeight: 500, fontSize: 14, textTransform: 'capitalize' }}>{fmtFecha(dia+'T12:00:00')}</div>
+                  {horasDia > 0 && <span style={{ background: '#dbeafe', color: '#1e40af', padding: '2px 10px', borderRadius: 20, fontSize: 12 }}>{h}h {m}m</span>}
+                </div>
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                  {logs.map(l => (
+                    <span key={l.id} style={{ padding: '3px 10px', borderRadius: 8, fontSize: 13, background: l.accion==='entrada'?'#dcfce7':'#fee2e2', color: l.accion==='entrada'?'#166534':'#991b1b' }}>
+                      {l.accion==='entrada'?'Entrada':'Salida'} {fmtHoraStr(l.hora)}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            )
+          })}
+          {Object.keys(historialPorDia).length === 0 && (
+            <div style={{ textAlign: 'center', padding: '3rem', color: '#94a3b8', fontSize: 14 }}>Sin registros este mes.</div>
+          )}
+        </div>
+      )}
+
+      {/* Grid empleados */}
+      {!seleccionado && !viendoHistorial && (
         <div style={{ padding: '24px', maxWidth: 700, margin: '0 auto' }}>
           <div style={{ fontSize: 15, color: '#64748b', marginBottom: 16 }}>Toca tu nombre para fichar</div>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(150px, 1fr))', gap: 12 }}>
@@ -182,29 +260,33 @@ export default function Home() {
               const dentro = estaAdentro(emp.id)
               const ci = i % COLORS.length
               return (
-                <div key={emp.id} onClick={() => seleccionar(emp)}
-                  style={{ background: '#fff', border: dentro ? '2px solid #16a34a' : '1px solid #e2e8f0', borderRadius: 14, padding: '20px 12px', textAlign: 'center', cursor: 'pointer' }}>
-                  <div style={{ width: 48, height: 48, borderRadius: '50%', background: COLORS[ci], color: TEXT_C[ci], display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 600, fontSize: 16, margin: '0 auto 10px' }}>
-                    {initials(emp.nombre)}
+                <div key={emp.id} style={{ background: '#fff', border: dentro ? '2px solid #16a34a' : '1px solid #e2e8f0', borderRadius: 14, padding: '20px 12px', textAlign: 'center' }}>
+                  <div onClick={() => seleccionar(emp)} style={{ cursor: 'pointer' }}>
+                    <div style={{ width: 48, height: 48, borderRadius: '50%', background: COLORS[ci], color: TEXT_C[ci], display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 600, fontSize: 16, margin: '0 auto 10px' }}>
+                      {initials(emp.nombre)}
+                    </div>
+                    <div style={{ fontWeight: 500, fontSize: 14 }}>{emp.nombre}</div>
+                    <div style={{ fontSize: 12, color: '#94a3b8', marginTop: 2 }}>{emp.rol}</div>
+                    <div style={{ marginTop: 8, display: 'inline-block', padding: '3px 10px', borderRadius: 20, fontSize: 12, background: dentro ? '#dcfce7' : '#f1f5f9', color: dentro ? '#166534' : '#94a3b8' }}>
+                      {dentro ? 'Presente' : 'Fuera'}
+                    </div>
                   </div>
-                  <div style={{ fontWeight: 500, fontSize: 14 }}>{emp.nombre}</div>
-                  <div style={{ fontSize: 12, color: '#94a3b8', marginTop: 2 }}>{emp.rol}</div>
-                  <div style={{ marginTop: 8, display: 'inline-block', padding: '3px 10px', borderRadius: 20, fontSize: 12, background: dentro ? '#dcfce7' : '#f1f5f9', color: dentro ? '#166534' : '#94a3b8' }}>
-                    {dentro ? 'Presente' : 'Fuera'}
-                  </div>
+                  <button onClick={() => cargarHistorial(emp)}
+                    style={{ marginTop: 8, width: '100%', background: 'none', border: '1px solid #e2e8f0', borderRadius: 8, padding: '5px 0', fontSize: 12, color: '#64748b', cursor: 'pointer' }}>
+                    Ver mis horas
+                  </button>
                 </div>
               )
             })}
           </div>
           {empleados.length === 0 && (
-            <div style={{ textAlign: 'center', padding: '3rem', color: '#94a3b8', fontSize: 14 }}>
-              No hay empleados cargados. Entra al panel admin para agregarlos.
-            </div>
+            <div style={{ textAlign: 'center', padding: '3rem', color: '#94a3b8', fontSize: 14 }}>No hay empleados cargados.</div>
           )}
         </div>
       )}
 
-      {seleccionado && (
+      {/* PIN + foto */}
+      {seleccionado && !viendoHistorial && (
         <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', minHeight: 'calc(100vh - 73px)', padding: '24px' }}>
           <div style={{ background: '#fff', border: '1px solid #e2e8f0', borderRadius: 20, padding: '32px 28px', width: '100%', maxWidth: 340, textAlign: 'center' }}>
             <div style={{ width: 56, height: 56, borderRadius: '50%', background: COLORS[0], color: TEXT_C[0], display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 600, fontSize: 18, margin: '0 auto 12px' }}>
@@ -218,8 +300,7 @@ export default function Home() {
             {esperandoFoto && !fotoCapturada && (
               <div style={{ marginBottom: 16, padding: '16px', background: '#f1f5f9', borderRadius: 10 }}>
                 <div style={{ fontSize: 14, color: '#475569', marginBottom: 12 }}>Saca una selfie para continuar</div>
-                <button
-                  onClick={() => fileInputRef.current && fileInputRef.current.click()}
+                <button onClick={() => fileInputRef.current && fileInputRef.current.click()}
                   style={{ width: '100%', padding: '12px', background: '#1e293b', color: '#fff', border: 'none', borderRadius: 10, fontSize: 14, fontWeight: 500, cursor: 'pointer' }}>
                   Abrir camara
                 </button>
@@ -254,16 +335,13 @@ export default function Home() {
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 10, marginBottom: 16 }}>
                   {[1,2,3,4,5,6,7,8,9].map(n => (
                     <button key={n} onClick={() => presionarPin(String(n))} disabled={!!estado && estado !== 'error'}
-                      style={{ padding: '16px', fontSize: 20, fontWeight: 500, background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 12, cursor: 'pointer' }}>
-                      {n}
-                    </button>
+                      style={{ padding: '16px', fontSize: 20, fontWeight: 500, background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 12, cursor: 'pointer' }}>{n}</button>
                   ))}
                   <button onClick={() => seleccionar(null)} style={{ padding: '16px', fontSize: 13, color: '#94a3b8', background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 12, cursor: 'pointer' }}>Atras</button>
                   <button onClick={() => presionarPin('0')} disabled={!!estado && estado !== 'error'}
                     style={{ padding: '16px', fontSize: 20, fontWeight: 500, background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 12, cursor: 'pointer' }}>0</button>
                   <button onClick={borrarPin} style={{ padding: '16px', fontSize: 18, color: '#64748b', background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 12, cursor: 'pointer' }}>X</button>
                 </div>
-
                 <button onClick={confirmar} disabled={pin.length < 4 || (!!estado && estado !== 'error')}
                   style={{ width: '100%', padding: '14px', background: pin.length === 4 && !estado ? (estaAdentro(seleccionado.id) ? '#dc2626' : '#16a34a') : '#e2e8f0', color: pin.length === 4 && !estado ? '#fff' : '#94a3b8', border: 'none', borderRadius: 12, fontSize: 15, fontWeight: 600, cursor: pin.length === 4 ? 'pointer' : 'default' }}>
                   {estaAdentro(seleccionado.id) ? 'Registrar salida' : 'Registrar entrada'}
