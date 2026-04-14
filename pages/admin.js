@@ -2,6 +2,9 @@ import { useState, useEffect } from 'react'
 import { supabase } from '../lib/supabase'
 import { useRouter } from 'next/router'
 
+const DIAS = ['Domingo','Lunes','Martes','Miercoles','Jueves','Viernes','Sabado']
+const DIAS_SHORT = ['Dom','Lun','Mar','Mie','Jue','Vie','Sab']
+
 export default function Admin() {
   const router = useRouter()
   const [autenticado, setAutenticado] = useState(false)
@@ -11,6 +14,7 @@ export default function Admin() {
   const [empleados, setEmpleados] = useState([])
   const [fichajes, setFichajes] = useState([])
   const [fichajesMes, setFichajesMes] = useState([])
+  const [turnos, setTurnos] = useState([])
   const [fechaFiltro, setFechaFiltro] = useState(new Date().toISOString().slice(0,10))
   const [mesFiltro, setMesFiltro] = useState(new Date().toISOString().slice(0,7))
   const [nuevoNombre, setNuevoNombre] = useState('')
@@ -26,9 +30,10 @@ export default function Admin() {
   const [borrandoId, setBorrandoId] = useState(null)
   const [fechaBorrar, setFechaBorrar] = useState(new Date().toISOString().slice(0,10))
   const [empBorrar, setEmpBorrar] = useState('')
+  const [guardandoTurno, setGuardandoTurno] = useState(false)
 
   useEffect(() => {
-    if (autenticado) cargarDatos()
+    if (autenticado) { cargarDatos(); cargarTurnos() }
   }, [autenticado, fechaFiltro])
 
   useEffect(() => {
@@ -43,6 +48,11 @@ export default function Admin() {
       .order('hora', { ascending: false })
     setEmpleados(emps || [])
     setFichajes(fich || [])
+  }
+
+  async function cargarTurnos() {
+    const { data } = await supabase.from('turnos').select('*, empleados(nombre)').order('dia_semana')
+    setTurnos(data || [])
   }
 
   async function cargarFichajesMes() {
@@ -86,7 +96,7 @@ export default function Admin() {
   }
 
   async function borrarPorFiltro() {
-    let msg = '¿Borrar registros'
+    let msg = 'Borrar registros'
     if (empBorrar) msg += ` de ${empleados.find(e=>e.id===empBorrar)?.nombre}`
     msg += ` del ${fechaBorrar}?`
     if (!confirm(msg)) return
@@ -96,7 +106,22 @@ export default function Admin() {
     if (empBorrar) query = query.eq('empleado_id', empBorrar)
     await query
     await cargarDatos()
-    alert('Registros borrados.')
+  }
+
+  async function guardarTurno(empId, dia, entrada, salida, franco) {
+    setGuardandoTurno(true)
+    const existing = turnos.find(t => t.empleado_id === empId && t.dia_semana === dia)
+    if (existing) {
+      await supabase.from('turnos').update({ hora_entrada: franco ? null : entrada, hora_salida: franco ? null : salida, es_franco: franco }).eq('id', existing.id)
+    } else {
+      await supabase.from('turnos').insert({ empleado_id: empId, dia_semana: dia, hora_entrada: franco ? null : entrada, hora_salida: franco ? null : salida, es_franco: franco })
+    }
+    await cargarTurnos()
+    setGuardandoTurno(false)
+  }
+
+  function getTurno(empId, dia) {
+    return turnos.find(t => t.empleado_id === empId && t.dia_semana === dia)
   }
 
   function horasTrabajadas(empId) {
@@ -150,6 +175,28 @@ export default function Admin() {
     else alert(`Sin fichar:\n\n${sin.map(e => '• ' + e.nombre).join('\n')}`)
   }
 
+  function getEstadoTurnoHoy(emp) {
+    const hoy = new Date()
+    const diaSemana = hoy.getDay()
+    const turno = getTurno(emp.id, diaSemana)
+    if (!turno) return null
+    if (turno.es_franco) return { tipo: 'franco', label: 'Franco' }
+    const fichajeHoy = fichajes.filter(f => f.empleado_id === emp.id && f.accion === 'entrada')
+    if (fichajeHoy.length === 0) {
+      const [hT, mT] = turno.hora_entrada.slice(0,5).split(':').map(Number)
+      const minutosEsperados = hT * 60 + mT
+      const minutosActuales = hoy.getHours() * 60 + hoy.getMinutes()
+      if (minutosActuales > minutosEsperados + 15) return { tipo: 'ausente', label: 'No fichó' }
+      return { tipo: 'pendiente', label: `Entra ${turno.hora_entrada.slice(0,5)}` }
+    }
+    const horaFichaje = new Date(fichajeHoy[0].hora)
+    const [hT, mT] = turno.hora_entrada.slice(0,5).split(':').map(Number)
+    const minutosEsperados = hT * 60 + mT
+    const minutosFichaje = horaFichaje.getHours() * 60 + horaFichaje.getMinutes()
+    if (minutosFichaje <= minutosEsperados + 10) return { tipo: 'ok', label: 'A tiempo' }
+    return { tipo: 'tarde', label: `Tarde ${minutosFichaje - minutosEsperados}min` }
+  }
+
   function fmtHoraStr(iso) {
     return new Date(iso).toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit', hour12: false })
   }
@@ -161,6 +208,9 @@ export default function Admin() {
   }).length
 
   const noFicharonHoy = empleados.filter(emp => !emp.es_admin && fichajes.filter(f => f.empleado_id === emp.id).length === 0)
+
+  const colorEstado = { ok: '#dcfce7', tarde: '#fef9c3', ausente: '#fee2e2', franco: '#f1f5f9', pendiente: '#e0f2fe' }
+  const textEstado = { ok: '#166534', tarde: '#854d0e', ausente: '#991b1b', franco: '#475569', pendiente: '#0369a1' }
 
   if (!autenticado) {
     return (
@@ -200,9 +250,9 @@ export default function Admin() {
         </div>
       </div>
 
-      <div style={{ maxWidth: 800, margin: '0 auto', padding: '24px' }}>
+      <div style={{ maxWidth: 900, margin: '0 auto', padding: '24px' }}>
         <div style={{ display: 'flex', gap: 4, marginBottom: 24, borderBottom: '1px solid #e2e8f0', overflowX: 'auto' }}>
-          {[['hoy','Registros'],['resumen','Resumen'],['alertas','Alertas'],['liquidacion','Liquidacion'],['empleados','Empleados']].map(([key,label]) => (
+          {[['hoy','Registros'],['resumen','Resumen'],['turnos','Turnos'],['alertas','Alertas'],['liquidacion','Liquidacion'],['empleados','Empleados']].map(([key,label]) => (
             <button key={key} onClick={() => setTab(key)} style={{ padding: '10px 14px', border: 'none', background: 'none', fontSize: 14, fontWeight: tab===key?600:400, color: tab===key?'#1e293b':'#64748b', borderBottom: tab===key?'2px solid #1e293b':'2px solid transparent', marginBottom: -1, cursor: 'pointer', whiteSpace: 'nowrap' }}>
               {label}
             </button>
@@ -219,7 +269,6 @@ export default function Admin() {
 
         {tab === 'hoy' && (
           <div>
-            {/* Borrar por filtro */}
             <div style={{ background: '#fff', border: '1px solid #e2e8f0', borderRadius: 12, padding: '14px 16px', marginBottom: 14, display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'flex-end' }}>
               <div>
                 <div style={{ fontSize: 12, color: '#64748b', marginBottom: 4 }}>Borrar registros del</div>
@@ -239,7 +288,6 @@ export default function Admin() {
                 Borrar
               </button>
             </div>
-
             <div style={{ background: '#fff', border: '1px solid #e2e8f0', borderRadius: 14 }}>
               {fichajes.length === 0 && <div style={{ padding: '3rem', textAlign: 'center', color: '#94a3b8', fontSize: 14 }}>Sin registros.</div>}
               {fichajes.map(f => (
@@ -317,18 +365,58 @@ export default function Admin() {
           </div>
         )}
 
+        {tab === 'turnos' && (
+          <div>
+            <div style={{ fontSize: 13, color: '#64748b', marginBottom: 16 }}>Configurá el turno fijo de cada empleado por día de semana. Los cambios se guardan automáticamente.</div>
+            <div style={{ overflowX: 'auto' }}>
+              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13, background: '#fff', border: '1px solid #e2e8f0', borderRadius: 14, overflow: 'hidden' }}>
+                <thead>
+                  <tr style={{ background: '#f8fafc' }}>
+                    <th style={{ padding: '12px 16px', textAlign: 'left', fontWeight: 500, color: '#64748b', fontSize: 12, textTransform: 'uppercase', minWidth: 100 }}>Empleado</th>
+                    {DIAS.map((d,i) => (
+                      <th key={i} style={{ padding: '12px 8px', textAlign: 'center', fontWeight: 500, color: '#64748b', fontSize: 12, textTransform: 'uppercase', minWidth: 110 }}>{d}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {empleados.filter(e => !e.es_admin).map(emp => (
+                    <tr key={emp.id} style={{ borderTop: '1px solid #f1f5f9' }}>
+                      <td style={{ padding: '10px 16px', fontWeight: 500, fontSize: 13 }}>{emp.nombre}</td>
+                      {[0,1,2,3,4,5,6].map(dia => {
+                        const turno = getTurno(emp.id, dia)
+                        return (
+                          <TurnoCell key={dia} turno={turno} onSave={(entrada, salida, franco) => guardarTurno(emp.id, dia, entrada, salida, franco)} />
+                        )
+                      })}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+
         {tab === 'alertas' && (
           <div>
-            {noFicharonHoy.length > 0 ? (
-              <div style={{ background: '#fef2f2', border: '1px solid #fca5a5', borderRadius: 14, padding: '16px 20px', marginBottom: 16 }}>
-                <div style={{ fontWeight: 500, color: '#dc2626', marginBottom: 8 }}>Sin fichar hoy</div>
-                {noFicharonHoy.map(emp => <div key={emp.id} style={{ fontSize: 14, color: '#475569', padding: '4px 0' }}>• {emp.nombre} — {emp.rol}</div>)}
-              </div>
-            ) : (
-              <div style={{ background: '#f0fdf4', border: '1px solid #86efac', borderRadius: 14, padding: '16px 20px', marginBottom: 16 }}>
-                <div style={{ fontWeight: 500, color: '#16a34a' }}>Todos ficharon entrada hoy</div>
-              </div>
-            )}
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(160px, 1fr))', gap: 10, marginBottom: 20 }}>
+              {empleados.filter(e => !e.es_admin).map(emp => {
+                const estado = getEstadoTurnoHoy(emp)
+                const dentro = fichajes.filter(f => f.empleado_id === emp.id).length > 0 && fichajes.filter(f => f.empleado_id === emp.id)[0].accion === 'entrada'
+                return (
+                  <div key={emp.id} style={{ background: '#fff', border: '1px solid #e2e8f0', borderRadius: 12, padding: '14px', textAlign: 'center' }}>
+                    <div style={{ fontWeight: 500, fontSize: 14, marginBottom: 6 }}>{emp.nombre}</div>
+                    {estado ? (
+                      <span style={{ display: 'inline-block', padding: '3px 10px', borderRadius: 20, fontSize: 12, background: colorEstado[estado.tipo], color: textEstado[estado.tipo] }}>
+                        {estado.label}
+                      </span>
+                    ) : (
+                      <span style={{ display: 'inline-block', padding: '3px 10px', borderRadius: 20, fontSize: 12, background: '#f1f5f9', color: '#94a3b8' }}>Sin turno</span>
+                    )}
+                    {dentro && <div style={{ fontSize: 11, color: '#16a34a', marginTop: 4 }}>Presente</div>}
+                  </div>
+                )
+              })}
+            </div>
             <div style={{ background: '#fff', border: '1px solid #e2e8f0', borderRadius: 14, padding: '20px' }}>
               <div style={{ fontWeight: 500, fontSize: 15, marginBottom: 16 }}>Verificar por hora limite</div>
               <div style={{ display: 'flex', gap: 10, alignItems: 'flex-end', flexWrap: 'wrap' }}>
@@ -464,5 +552,64 @@ export default function Admin() {
         )}
       </div>
     </div>
+  )
+}
+
+function TurnoCell({ turno, onSave }) {
+  const [editando, setEditando] = useState(false)
+  const [entrada, setEntrada] = useState(turno?.hora_entrada?.slice(0,5) || '09:00')
+  const [salida, setSalida] = useState(turno?.hora_salida?.slice(0,5) || '17:00')
+  const [franco, setFranco] = useState(turno?.es_franco || false)
+
+  useEffect(() => {
+    setEntrada(turno?.hora_entrada?.slice(0,5) || '09:00')
+    setSalida(turno?.hora_salida?.slice(0,5) || '17:00')
+    setFranco(turno?.es_franco || false)
+  }, [turno])
+
+  async function guardar() {
+    await onSave(entrada, salida, franco)
+    setEditando(false)
+  }
+
+  if (!editando) {
+    return (
+      <td style={{ padding: '8px', textAlign: 'center' }} onClick={() => setEditando(true)}>
+        {turno ? (
+          turno.es_franco ? (
+            <span style={{ background: '#f1f5f9', color: '#64748b', padding: '3px 8px', borderRadius: 8, fontSize: 12, cursor: 'pointer' }}>Franco</span>
+          ) : (
+            <span style={{ background: '#e0f2fe', color: '#0369a1', padding: '3px 8px', borderRadius: 8, fontSize: 12, cursor: 'pointer' }}>
+              {turno.hora_entrada?.slice(0,5)} - {turno.hora_salida?.slice(0,5)}
+            </span>
+          )
+        ) : (
+          <span style={{ color: '#cbd5e1', fontSize: 12, cursor: 'pointer' }}>+ Agregar</span>
+        )}
+      </td>
+    )
+  }
+
+  return (
+    <td style={{ padding: '6px', textAlign: 'center', background: '#f8fafc' }}>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 4, alignItems: 'center' }}>
+        <label style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 11, color: '#64748b' }}>
+          <input type="checkbox" checked={franco} onChange={e => setFranco(e.target.checked)} />
+          Franco
+        </label>
+        {!franco && (
+          <>
+            <input type="time" value={entrada} onChange={e => setEntrada(e.target.value)}
+              style={{ width: 90, border: '1px solid #e2e8f0', borderRadius: 6, padding: '3px 6px', fontSize: 12 }} />
+            <input type="time" value={salida} onChange={e => setSalida(e.target.value)}
+              style={{ width: 90, border: '1px solid #e2e8f0', borderRadius: 6, padding: '3px 6px', fontSize: 12 }} />
+          </>
+        )}
+        <div style={{ display: 'flex', gap: 4 }}>
+          <button onClick={guardar} style={{ background: '#1e293b', color: '#fff', border: 'none', borderRadius: 6, padding: '3px 8px', fontSize: 11, cursor: 'pointer' }}>OK</button>
+          <button onClick={() => setEditando(false)} style={{ background: '#f1f5f9', border: 'none', borderRadius: 6, padding: '3px 8px', fontSize: 11, cursor: 'pointer' }}>X</button>
+        </div>
+      </div>
+    </td>
   )
 }
