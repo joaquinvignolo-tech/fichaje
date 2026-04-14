@@ -3,7 +3,6 @@ import { supabase } from '../lib/supabase'
 import { useRouter } from 'next/router'
 
 const DIAS = ['Domingo','Lunes','Martes','Miercoles','Jueves','Viernes','Sabado']
-const DIAS_SHORT = ['Dom','Lun','Mar','Mie','Jue','Vie','Sab']
 
 export default function Admin() {
   const router = useRouter()
@@ -30,7 +29,12 @@ export default function Admin() {
   const [borrandoId, setBorrandoId] = useState(null)
   const [fechaBorrar, setFechaBorrar] = useState(new Date().toISOString().slice(0,10))
   const [empBorrar, setEmpBorrar] = useState('')
-  const [guardandoTurno, setGuardandoTurno] = useState(false)
+  // Configuracion premios y descuentos
+  const [premioPresentismo, setPremioPresentismo] = useState(0)
+  const [premioPuntualidad, setPremioPuntualidad] = useState(0)
+  const [diasPuntualidad, setDiasPuntualidad] = useState(20)
+  const [toleranciaTardanza, setToleranciaTardanza] = useState(10)
+  const [descuentoTardanza, setDescuentoTardanza] = useState(true)
 
   useEffect(() => {
     if (autenticado) { cargarDatos(); cargarTurnos() }
@@ -101,15 +105,13 @@ export default function Admin() {
     msg += ` del ${fechaBorrar}?`
     if (!confirm(msg)) return
     let query = supabase.from('fichajes').delete()
-      .gte('hora', fechaBorrar + 'T00:00:00')
-      .lte('hora', fechaBorrar + 'T23:59:59')
+      .gte('hora', fechaBorrar + 'T00:00:00').lte('hora', fechaBorrar + 'T23:59:59')
     if (empBorrar) query = query.eq('empleado_id', empBorrar)
     await query
     await cargarDatos()
   }
 
   async function guardarTurno(empId, dia, entrada, salida, franco) {
-    setGuardandoTurno(true)
     const existing = turnos.find(t => t.empleado_id === empId && t.dia_semana === dia)
     if (existing) {
       await supabase.from('turnos').update({ hora_entrada: franco ? null : entrada, hora_salida: franco ? null : salida, es_franco: franco }).eq('id', existing.id)
@@ -117,7 +119,6 @@ export default function Admin() {
       await supabase.from('turnos').insert({ empleado_id: empId, dia_semana: dia, hora_entrada: franco ? null : entrada, hora_salida: franco ? null : salida, es_franco: franco })
     }
     await cargarTurnos()
-    setGuardandoTurno(false)
   }
 
   function getTurno(empId, dia) {
@@ -137,26 +138,90 @@ export default function Admin() {
 
   function calcularLiquidacion(empId) {
     const logs = fichajesMes.filter(f => f.empleado_id === empId).sort((a,b) => new Date(a.hora)-new Date(b.hora))
-    const dias = {}
+    const tarifa = tarifas[empId] || 0
+
+    // Agrupar por dia
+    const diasMap = {}
     for (let i = 0; i < logs.length - 1; i++) {
       if (logs[i].accion === 'entrada' && logs[i+1].accion === 'salida') {
+        const entrada = new Date(logs[i].hora)
+        const salida = new Date(logs[i+1].hora)
         const dia = logs[i].hora.slice(0,10)
-        dias[dia] = (dias[dia] || 0) + (new Date(logs[i+1].hora) - new Date(logs[i].hora)) / 3600000
+        const horas = (salida - entrada) / 3600000
+
+        // Calcular tardanza
+        const diaSemana = entrada.getDay()
+        const turno = getTurno(empId, diaSemana)
+        let minTardanza = 0
+        if (turno && !turno.es_franco && turno.hora_entrada) {
+          const [hT, mT] = turno.hora_entrada.slice(0,5).split(':').map(Number)
+          const minEsperado = hT * 60 + mT
+          const minReal = entrada.getHours() * 60 + entrada.getMinutes()
+          minTardanza = Math.max(0, minReal - minEsperado - toleranciaTardanza)
+        }
+
+        if (!diasMap[dia]) diasMap[dia] = { horas: 0, tardanza: 0 }
+        diasMap[dia].horas += horas
+        diasMap[dia].tardanza = Math.max(diasMap[dia].tardanza, minTardanza)
       }
     }
-    let hn = 0, he = 0
-    Object.values(dias).forEach(h => { if (h <= horasJornada) { hn += h } else { hn += horasJornada; he += h - horasJornada } })
-    const tarifa = tarifas[empId] || 0
-    const tn = Math.round(hn * tarifa); const te = Math.round(he * tarifa * (1 + recargo/100))
-    return { dias: Object.keys(dias).length, hn: Math.round(hn*10)/10, he: Math.round(he*10)/10, tn, te, total: tn+te }
+
+    let hn = 0, he = 0, minDescuento = 0, diasPuntuales = 0
+    const diasTrabajados = Object.keys(diasMap).length
+
+    Object.values(diasMap).forEach(d => {
+      const h = d.horas
+      if (h <= horasJornada) { hn += h } else { hn += horasJornada; he += h - horasJornada }
+      if (descuentoTardanza) minDescuento += d.tardanza
+      if (d.tardanza <= toleranciaTardanza) diasPuntuales++
+    })
+
+    // Calcular dias laborables del mes (sin francos)
+    const diasLaborablesMes = []
+    const inicio = new Date(mesFiltro + '-01')
+    const fin = new Date(mesFiltro + '-01')
+    fin.setMonth(fin.getMonth() + 1)
+    for (let d = new Date(inicio); d < fin; d.setDate(d.getDate() + 1)) {
+      const diaSem = d.getDay()
+      const turno = getTurno(empId, diaSem)
+      if (!turno || !turno.es_franco) diasLaborablesMes.push(d.toISOString().slice(0,10))
+    }
+
+    const horasDescuento = minDescuento / 60
+    const hnReal = Math.max(0, hn - horasDescuento)
+
+    const tn = Math.round(hnReal * tarifa)
+    const te = Math.round(he * tarifa * (1 + recargo/100))
+
+    // Premios
+    const tienePresentismo = diasTrabajados >= diasLaborablesMes.length && diasLaborablesMes.length > 0
+    const tienePuntualidad = diasPuntuales >= diasPuntualidad
+
+    const bonoPresentismo = tienePresentismo ? premioPresentismo : 0
+    const bonoPuntualidad = tienePuntualidad ? premioPuntualidad : 0
+
+    const total = tn + te + bonoPresentismo + bonoPuntualidad
+
+    return {
+      dias: diasTrabajados,
+      diasLaborables: diasLaborablesMes.length,
+      hn: Math.round(hnReal * 10) / 10,
+      he: Math.round(he * 10) / 10,
+      tardanzaMin: Math.round(minDescuento),
+      diasPuntuales,
+      tn, te,
+      bonoPresentismo, bonoPuntualidad,
+      tienePresentismo, tienePuntualidad,
+      total
+    }
   }
 
   function exportarExcel() {
-    let csv = 'Empleado,Rol,Dias,Hs normales,Hs extra,Total normal,Total extra,TOTAL\n'
+    let csv = 'Empleado,Rol,Dias,Hs normales,Hs extra,Tardanzas,Premio presentismo,Premio puntualidad,TOTAL\n'
     empleados.filter(e => !e.es_admin).forEach(emp => {
       const l = calcularLiquidacion(emp.id)
       if (l.dias > 0 || tarifas[emp.id] > 0)
-        csv += `${emp.nombre},${emp.rol},${l.dias},${l.hn},${l.he},$${l.tn},$${l.te},$${l.total}\n`
+        csv += `${emp.nombre},${emp.rol},${l.dias},${l.hn},${l.he},${l.tardanzaMin}min,$${l.bonoPresentismo},$${l.bonoPuntualidad},$${l.total}\n`
     })
     const a = document.createElement('a')
     a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8;' }))
@@ -177,38 +242,33 @@ export default function Admin() {
 
   function getEstadoTurnoHoy(emp) {
     const hoy = new Date()
-    const diaSemana = hoy.getDay()
-    const turno = getTurno(emp.id, diaSemana)
+    const turno = getTurno(emp.id, hoy.getDay())
     if (!turno) return null
     if (turno.es_franco) return { tipo: 'franco', label: 'Franco' }
     const fichajeHoy = fichajes.filter(f => f.empleado_id === emp.id && f.accion === 'entrada')
     if (fichajeHoy.length === 0) {
       const [hT, mT] = turno.hora_entrada.slice(0,5).split(':').map(Number)
-      const minutosEsperados = hT * 60 + mT
-      const minutosActuales = hoy.getHours() * 60 + hoy.getMinutes()
-      if (minutosActuales > minutosEsperados + 15) return { tipo: 'ausente', label: 'No fichó' }
+      if (hoy.getHours() * 60 + hoy.getMinutes() > hT * 60 + mT + 15)
+        return { tipo: 'ausente', label: 'No ficho' }
       return { tipo: 'pendiente', label: `Entra ${turno.hora_entrada.slice(0,5)}` }
     }
     const horaFichaje = new Date(fichajeHoy[0].hora)
     const [hT, mT] = turno.hora_entrada.slice(0,5).split(':').map(Number)
-    const minutosEsperados = hT * 60 + mT
-    const minutosFichaje = horaFichaje.getHours() * 60 + horaFichaje.getMinutes()
-    if (minutosFichaje <= minutosEsperados + 10) return { tipo: 'ok', label: 'A tiempo' }
-    return { tipo: 'tarde', label: `Tarde ${minutosFichaje - minutosEsperados}min` }
+    const diff = horaFichaje.getHours() * 60 + horaFichaje.getMinutes() - (hT * 60 + mT)
+    if (diff <= toleranciaTardanza) return { tipo: 'ok', label: 'A tiempo' }
+    return { tipo: 'tarde', label: `Tarde ${diff}min` }
   }
 
   function fmtHoraStr(iso) {
     return new Date(iso).toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit', hour12: false })
   }
-  function fmtPeso(n) { return '$' + n.toLocaleString('es-AR') }
+  function fmtPeso(n) { return '$' + Math.round(n).toLocaleString('es-AR') }
 
   const presentes = empleados.filter(emp => {
     const logs = fichajes.filter(f => f.empleado_id === emp.id)
     return logs.length > 0 && logs[0].accion === 'entrada'
   }).length
-
   const noFicharonHoy = empleados.filter(emp => !emp.es_admin && fichajes.filter(f => f.empleado_id === emp.id).length === 0)
-
   const colorEstado = { ok: '#dcfce7', tarde: '#fef9c3', ausente: '#fee2e2', franco: '#f1f5f9', pendiente: '#e0f2fe' }
   const textEstado = { ok: '#166534', tarde: '#854d0e', ausente: '#991b1b', franco: '#475569', pendiente: '#0369a1' }
 
@@ -261,8 +321,7 @@ export default function Admin() {
 
         {(tab === 'hoy' || tab === 'resumen') && (
           <div style={{ display: 'flex', gap: 10, marginBottom: 20 }}>
-            <input type="date" value={fechaFiltro} onChange={e => setFechaFiltro(e.target.value)}
-              style={{ border: '1px solid #e2e8f0', borderRadius: 8, padding: '6px 10px', fontSize: 13 }} />
+            <input type="date" value={fechaFiltro} onChange={e => setFechaFiltro(e.target.value)} style={{ border: '1px solid #e2e8f0', borderRadius: 8, padding: '6px 10px', fontSize: 13 }} />
             <button onClick={cargarDatos} style={{ background: '#f1f5f9', border: '1px solid #e2e8f0', borderRadius: 8, padding: '6px 12px', fontSize: 13, cursor: 'pointer' }}>Actualizar</button>
           </div>
         )}
@@ -272,21 +331,16 @@ export default function Admin() {
             <div style={{ background: '#fff', border: '1px solid #e2e8f0', borderRadius: 12, padding: '14px 16px', marginBottom: 14, display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'flex-end' }}>
               <div>
                 <div style={{ fontSize: 12, color: '#64748b', marginBottom: 4 }}>Borrar registros del</div>
-                <input type="date" value={fechaBorrar} onChange={e => setFechaBorrar(e.target.value)}
-                  style={{ border: '1px solid #e2e8f0', borderRadius: 8, padding: '6px 10px', fontSize: 13 }} />
+                <input type="date" value={fechaBorrar} onChange={e => setFechaBorrar(e.target.value)} style={{ border: '1px solid #e2e8f0', borderRadius: 8, padding: '6px 10px', fontSize: 13 }} />
               </div>
               <div>
                 <div style={{ fontSize: 12, color: '#64748b', marginBottom: 4 }}>Empleado (opcional)</div>
-                <select value={empBorrar} onChange={e => setEmpBorrar(e.target.value)}
-                  style={{ border: '1px solid #e2e8f0', borderRadius: 8, padding: '6px 10px', fontSize: 13, background: '#fff' }}>
+                <select value={empBorrar} onChange={e => setEmpBorrar(e.target.value)} style={{ border: '1px solid #e2e8f0', borderRadius: 8, padding: '6px 10px', fontSize: 13, background: '#fff' }}>
                   <option value="">Todos</option>
                   {empleados.filter(e => !e.es_admin).map(e => <option key={e.id} value={e.id}>{e.nombre}</option>)}
                 </select>
               </div>
-              <button onClick={borrarPorFiltro}
-                style={{ background: '#fee2e2', color: '#dc2626', border: '1px solid #fca5a5', borderRadius: 8, padding: '7px 14px', fontSize: 13, cursor: 'pointer', fontWeight: 500 }}>
-                Borrar
-              </button>
+              <button onClick={borrarPorFiltro} style={{ background: '#fee2e2', color: '#dc2626', border: '1px solid #fca5a5', borderRadius: 8, padding: '7px 14px', fontSize: 13, cursor: 'pointer', fontWeight: 500 }}>Borrar</button>
             </div>
             <div style={{ background: '#fff', border: '1px solid #e2e8f0', borderRadius: 14 }}>
               {fichajes.length === 0 && <div style={{ padding: '3rem', textAlign: 'center', color: '#94a3b8', fontSize: 14 }}>Sin registros.</div>}
@@ -309,14 +363,10 @@ export default function Admin() {
                     <span style={{ fontFamily: 'monospace', fontSize: 14, color: '#475569' }}>{fmtHoraStr(f.hora)}</span>
                     {f.lat && f.lng && (
                       <button onClick={() => window.open(`https://www.google.com/maps?q=${f.lat},${f.lng}&z=17`, '_blank')}
-                        style={{ background: '#dbeafe', border: 'none', color: '#1e40af', borderRadius: 8, padding: '4px 10px', fontSize: 12, cursor: 'pointer' }}>
-                        Mapa
-                      </button>
+                        style={{ background: '#dbeafe', border: 'none', color: '#1e40af', borderRadius: 8, padding: '4px 10px', fontSize: 12, cursor: 'pointer' }}>Mapa</button>
                     )}
                     <button onClick={() => borrarRegistro(f.id)} disabled={borrandoId === f.id}
-                      style={{ background: 'none', border: 'none', color: '#dc2626', fontSize: 16, cursor: 'pointer', padding: '4px 6px' }}>
-                      ✕
-                    </button>
+                      style={{ background: 'none', border: 'none', color: '#dc2626', fontSize: 16, cursor: 'pointer', padding: '4px 6px' }}>✕</button>
                   </div>
                 </div>
               ))}
@@ -341,10 +391,7 @@ export default function Admin() {
                   if (!logs.length) return null
                   return (
                     <tr key={emp.id} style={{ borderTop: '1px solid #f1f5f9' }}>
-                      <td style={{ padding: '12px 16px' }}>
-                        <div style={{ fontWeight: 500 }}>{emp.nombre}</div>
-                        <div style={{ fontSize: 12, color: '#94a3b8' }}>{emp.rol}</div>
-                      </td>
+                      <td style={{ padding: '12px 16px' }}><div style={{ fontWeight: 500 }}>{emp.nombre}</div><div style={{ fontSize: 12, color: '#94a3b8' }}>{emp.rol}</div></td>
                       <td style={{ padding: '12px 16px' }}>
                         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
                           {logs.map(l => (
@@ -367,27 +414,22 @@ export default function Admin() {
 
         {tab === 'turnos' && (
           <div>
-            <div style={{ fontSize: 13, color: '#64748b', marginBottom: 16 }}>Configurá el turno fijo de cada empleado por día de semana. Los cambios se guardan automáticamente.</div>
+            <div style={{ fontSize: 13, color: '#64748b', marginBottom: 16 }}>Toca cualquier celda para editar el turno. Los cambios se guardan automaticamente.</div>
             <div style={{ overflowX: 'auto' }}>
-              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13, background: '#fff', border: '1px solid #e2e8f0', borderRadius: 14, overflow: 'hidden' }}>
+              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13, background: '#fff', border: '1px solid #e2e8f0', borderRadius: 14 }}>
                 <thead>
                   <tr style={{ background: '#f8fafc' }}>
                     <th style={{ padding: '12px 16px', textAlign: 'left', fontWeight: 500, color: '#64748b', fontSize: 12, textTransform: 'uppercase', minWidth: 100 }}>Empleado</th>
-                    {DIAS.map((d,i) => (
-                      <th key={i} style={{ padding: '12px 8px', textAlign: 'center', fontWeight: 500, color: '#64748b', fontSize: 12, textTransform: 'uppercase', minWidth: 110 }}>{d}</th>
-                    ))}
+                    {DIAS.map((d,i) => <th key={i} style={{ padding: '12px 8px', textAlign: 'center', fontWeight: 500, color: '#64748b', fontSize: 12, textTransform: 'uppercase', minWidth: 110 }}>{d}</th>)}
                   </tr>
                 </thead>
                 <tbody>
                   {empleados.filter(e => !e.es_admin).map(emp => (
                     <tr key={emp.id} style={{ borderTop: '1px solid #f1f5f9' }}>
                       <td style={{ padding: '10px 16px', fontWeight: 500, fontSize: 13 }}>{emp.nombre}</td>
-                      {[0,1,2,3,4,5,6].map(dia => {
-                        const turno = getTurno(emp.id, dia)
-                        return (
-                          <TurnoCell key={dia} turno={turno} onSave={(entrada, salida, franco) => guardarTurno(emp.id, dia, entrada, salida, franco)} />
-                        )
-                      })}
+                      {[0,1,2,3,4,5,6].map(dia => (
+                        <TurnoCell key={dia} turno={getTurno(emp.id, dia)} onSave={(e,s,f) => guardarTurno(emp.id, dia, e, s, f)} />
+                      ))}
                     </tr>
                   ))}
                 </tbody>
@@ -406,9 +448,7 @@ export default function Admin() {
                   <div key={emp.id} style={{ background: '#fff', border: '1px solid #e2e8f0', borderRadius: 12, padding: '14px', textAlign: 'center' }}>
                     <div style={{ fontWeight: 500, fontSize: 14, marginBottom: 6 }}>{emp.nombre}</div>
                     {estado ? (
-                      <span style={{ display: 'inline-block', padding: '3px 10px', borderRadius: 20, fontSize: 12, background: colorEstado[estado.tipo], color: textEstado[estado.tipo] }}>
-                        {estado.label}
-                      </span>
+                      <span style={{ display: 'inline-block', padding: '3px 10px', borderRadius: 20, fontSize: 12, background: colorEstado[estado.tipo], color: textEstado[estado.tipo] }}>{estado.label}</span>
                     ) : (
                       <span style={{ display: 'inline-block', padding: '3px 10px', borderRadius: 20, fontSize: 12, background: '#f1f5f9', color: '#94a3b8' }}>Sin turno</span>
                     )}
@@ -422,12 +462,9 @@ export default function Admin() {
               <div style={{ display: 'flex', gap: 10, alignItems: 'flex-end', flexWrap: 'wrap' }}>
                 <div>
                   <div style={{ fontSize: 12, color: '#64748b', marginBottom: 4 }}>Hora limite</div>
-                  <input type="time" value={horaAlerta} onChange={e => setHoraAlerta(e.target.value)}
-                    style={{ border: '1px solid #e2e8f0', borderRadius: 8, padding: '6px 10px', fontSize: 14 }} />
+                  <input type="time" value={horaAlerta} onChange={e => setHoraAlerta(e.target.value)} style={{ border: '1px solid #e2e8f0', borderRadius: 8, padding: '6px 10px', fontSize: 14 }} />
                 </div>
-                <button onClick={verificarAlertas} style={{ background: '#1e293b', color: '#fff', border: 'none', borderRadius: 9, padding: '10px 20px', fontSize: 14, fontWeight: 500, cursor: 'pointer' }}>
-                  Verificar ahora
-                </button>
+                <button onClick={verificarAlertas} style={{ background: '#1e293b', color: '#fff', border: 'none', borderRadius: 9, padding: '10px 20px', fontSize: 14, fontWeight: 500, cursor: 'pointer' }}>Verificar ahora</button>
               </div>
             </div>
           </div>
@@ -435,85 +472,164 @@ export default function Admin() {
 
         {tab === 'liquidacion' && (
           <div>
+            {/* Config general */}
             <div style={{ background: '#fff', border: '1px solid #e2e8f0', borderRadius: 14, padding: '20px', marginBottom: 16 }}>
-              <div style={{ fontWeight: 500, fontSize: 15, marginBottom: 16 }}>Configuracion</div>
+              <div style={{ fontWeight: 500, fontSize: 15, marginBottom: 16 }}>Configuracion general</div>
               <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', marginBottom: 16 }}>
                 <div>
                   <div style={{ fontSize: 12, color: '#64748b', marginBottom: 4 }}>Mes</div>
-                  <input type="month" value={mesFiltro} onChange={e => setMesFiltro(e.target.value)}
-                    style={{ border: '1px solid #e2e8f0', borderRadius: 8, padding: '6px 10px', fontSize: 14 }} />
+                  <input type="month" value={mesFiltro} onChange={e => setMesFiltro(e.target.value)} style={{ border: '1px solid #e2e8f0', borderRadius: 8, padding: '6px 10px', fontSize: 14 }} />
                 </div>
                 <div>
                   <div style={{ fontSize: 12, color: '#64748b', marginBottom: 4 }}>Jornada normal (hs)</div>
-                  <input type="number" value={horasJornada} onChange={e => setHorasJornada(Number(e.target.value))} min={1} max={12}
-                    style={{ width: 80, border: '1px solid #e2e8f0', borderRadius: 8, padding: '6px 10px', fontSize: 14 }} />
+                  <input type="number" value={horasJornada} onChange={e => setHorasJornada(Number(e.target.value))} min={1} max={12} style={{ width: 80, border: '1px solid #e2e8f0', borderRadius: 8, padding: '6px 10px', fontSize: 14 }} />
                 </div>
                 <div>
-                  <div style={{ fontSize: 12, color: '#64748b', marginBottom: 4 }}>Recargo extra</div>
+                  <div style={{ fontSize: 12, color: '#64748b', marginBottom: 4 }}>Recargo horas extra</div>
                   <div style={{ display: 'flex', gap: 8 }}>
                     <button onClick={() => setRecargo(50)} style={{ padding: '6px 14px', borderRadius: 8, border: '1px solid #e2e8f0', background: recargo===50?'#1e293b':'#f8fafc', color: recargo===50?'#fff':'#475569', fontSize: 14, cursor: 'pointer' }}>50%</button>
                     <button onClick={() => setRecargo(100)} style={{ padding: '6px 14px', borderRadius: 8, border: '1px solid #e2e8f0', background: recargo===100?'#1e293b':'#f8fafc', color: recargo===100?'#fff':'#475569', fontSize: 14, cursor: 'pointer' }}>100%</button>
                   </div>
                 </div>
               </div>
-              <div style={{ fontWeight: 500, fontSize: 14, marginBottom: 10 }}>Valor por hora</div>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                {empleados.filter(e => !e.es_admin).map(emp => (
-                  <div key={emp.id} style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-                    <span style={{ fontSize: 14, minWidth: 150 }}>{emp.nombre}</span>
-                    <span style={{ fontSize: 14, color: '#64748b' }}>$</span>
-                    <input type="number" value={tarifas[emp.id] || ''} onChange={e => setTarifas(t => ({ ...t, [emp.id]: Number(e.target.value) }))} placeholder="0" min={0}
-                      style={{ width: 100, border: '1px solid #e2e8f0', borderRadius: 8, padding: '6px 10px', fontSize: 14 }} />
-                    <span style={{ fontSize: 12, color: '#94a3b8' }}>/ hora</span>
+
+              {/* Premios */}
+              <div style={{ borderTop: '1px solid #f1f5f9', paddingTop: 16, marginTop: 8 }}>
+                <div style={{ fontWeight: 500, fontSize: 14, marginBottom: 12, color: '#16a34a' }}>Premios</div>
+                <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', marginBottom: 12 }}>
+                  <div>
+                    <div style={{ fontSize: 12, color: '#64748b', marginBottom: 4 }}>Premio presentismo (no faltó ningún día)</div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                      <span style={{ fontSize: 14, color: '#64748b' }}>$</span>
+                      <input type="number" value={premioPresentismo} onChange={e => setPremioPresentismo(Number(e.target.value))} min={0} placeholder="0"
+                        style={{ width: 100, border: '1px solid #e2e8f0', borderRadius: 8, padding: '6px 10px', fontSize: 14 }} />
+                    </div>
                   </div>
-                ))}
+                  <div>
+                    <div style={{ fontSize: 12, color: '#64748b', marginBottom: 4 }}>Premio puntualidad (llego a horario)</div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                        <span style={{ fontSize: 14, color: '#64748b' }}>$</span>
+                        <input type="number" value={premioPuntualidad} onChange={e => setPremioPuntualidad(Number(e.target.value))} min={0} placeholder="0"
+                          style={{ width: 100, border: '1px solid #e2e8f0', borderRadius: 8, padding: '6px 10px', fontSize: 14 }} />
+                      </div>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                        <span style={{ fontSize: 12, color: '#64748b' }}>si llegó a horario</span>
+                        <input type="number" value={diasPuntualidad} onChange={e => setDiasPuntualidad(Number(e.target.value))} min={1} max={31}
+                          style={{ width: 60, border: '1px solid #e2e8f0', borderRadius: 8, padding: '6px 10px', fontSize: 14 }} />
+                        <span style={{ fontSize: 12, color: '#64748b' }}>días o más</span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Descuentos */}
+              <div style={{ borderTop: '1px solid #f1f5f9', paddingTop: 16, marginTop: 8 }}>
+                <div style={{ fontWeight: 500, fontSize: 14, marginBottom: 12, color: '#dc2626' }}>Descuentos por tardanza</div>
+                <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', alignItems: 'center' }}>
+                  <div>
+                    <div style={{ fontSize: 12, color: '#64748b', marginBottom: 4 }}>Tolerancia (minutos)</div>
+                    <input type="number" value={toleranciaTardanza} onChange={e => setToleranciaTardanza(Number(e.target.value))} min={0} max={60}
+                      style={{ width: 80, border: '1px solid #e2e8f0', borderRadius: 8, padding: '6px 10px', fontSize: 14 }} />
+                  </div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 20 }}>
+                    <input type="checkbox" id="descuento" checked={descuentoTardanza} onChange={e => setDescuentoTardanza(e.target.checked)} />
+                    <label htmlFor="descuento" style={{ fontSize: 13, color: '#475569' }}>Descontar minutos de tardanza del sueldo</label>
+                  </div>
+                </div>
+              </div>
+
+              {/* Tarifas */}
+              <div style={{ borderTop: '1px solid #f1f5f9', paddingTop: 16, marginTop: 8 }}>
+                <div style={{ fontWeight: 500, fontSize: 14, marginBottom: 10 }}>Valor por hora por empleado</div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                  {empleados.filter(e => !e.es_admin).map(emp => (
+                    <div key={emp.id} style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                      <span style={{ fontSize: 14, minWidth: 150 }}>{emp.nombre}</span>
+                      <span style={{ fontSize: 14, color: '#64748b' }}>$</span>
+                      <input type="number" value={tarifas[emp.id] || ''} onChange={e => setTarifas(t => ({ ...t, [emp.id]: Number(e.target.value) }))} placeholder="0" min={0}
+                        style={{ width: 100, border: '1px solid #e2e8f0', borderRadius: 8, padding: '6px 10px', fontSize: 14 }} />
+                      <span style={{ fontSize: 12, color: '#94a3b8' }}>/ hora</span>
+                    </div>
+                  ))}
+                </div>
               </div>
             </div>
+
+            {/* Tabla liquidacion */}
             <div style={{ background: '#fff', border: '1px solid #e2e8f0', borderRadius: 14, overflow: 'hidden' }}>
               <div style={{ padding: '16px 20px', borderBottom: '1px solid #f1f5f9', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                 <div style={{ fontWeight: 500, fontSize: 15 }}>Liquidacion — {new Date(mesFiltro+'-02').toLocaleDateString('es-AR',{month:'long',year:'numeric'})}</div>
                 <button onClick={exportarExcel} style={{ background: '#16a34a', color: '#fff', border: 'none', borderRadius: 8, padding: '8px 16px', fontSize: 13, fontWeight: 500, cursor: 'pointer' }}>Exportar Excel</button>
               </div>
-              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 14 }}>
-                <thead>
-                  <tr style={{ background: '#f8fafc' }}>
-                    <th style={{ padding: '10px 16px', textAlign: 'left', fontWeight: 500, color: '#64748b', fontSize: 12, textTransform: 'uppercase' }}>Empleado</th>
-                    <th style={{ padding: '10px 16px', textAlign: 'center', fontWeight: 500, color: '#64748b', fontSize: 12, textTransform: 'uppercase' }}>Dias</th>
-                    <th style={{ padding: '10px 16px', textAlign: 'center', fontWeight: 500, color: '#64748b', fontSize: 12, textTransform: 'uppercase' }}>Hs norm.</th>
-                    <th style={{ padding: '10px 16px', textAlign: 'center', fontWeight: 500, color: '#64748b', fontSize: 12, textTransform: 'uppercase' }}>Hs extra</th>
-                    <th style={{ padding: '10px 16px', textAlign: 'right', fontWeight: 500, color: '#64748b', fontSize: 12, textTransform: 'uppercase' }}>Total</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {empleados.filter(e => !e.es_admin).map(emp => {
-                    const l = calcularLiquidacion(emp.id)
-                    const tarifa = tarifas[emp.id] || 0
-                    if (l.dias === 0 && !tarifa) return null
-                    return (
-                      <tr key={emp.id} style={{ borderTop: '1px solid #f1f5f9' }}>
-                        <td style={{ padding: '12px 16px' }}>
-                          <div style={{ fontWeight: 500 }}>{emp.nombre}</div>
-                          <div style={{ fontSize: 12, color: '#94a3b8' }}>{tarifa > 0 ? `${fmtPeso(tarifa)}/h` : 'Sin tarifa'}</div>
-                        </td>
-                        <td style={{ padding: '12px 16px', textAlign: 'center' }}>
-                          <span style={{ background: '#f1f5f9', padding: '2px 10px', borderRadius: 20, fontSize: 13 }}>{l.dias}</span>
-                        </td>
-                        <td style={{ padding: '12px 16px', textAlign: 'center' }}>
-                          <div>{l.hn}h</div>
-                          {tarifa > 0 && <div style={{ fontSize: 11, color: '#94a3b8' }}>{fmtPeso(l.tn)}</div>}
-                        </td>
-                        <td style={{ padding: '12px 16px', textAlign: 'center' }}>
-                          <div style={{ color: l.he > 0 ? '#d97706' : '#94a3b8' }}>{l.he}h</div>
-                          {tarifa > 0 && l.he > 0 && <div style={{ fontSize: 11, color: '#d97706' }}>{fmtPeso(l.te)} (+{recargo}%)</div>}
-                        </td>
-                        <td style={{ padding: '12px 16px', textAlign: 'right' }}>
-                          {tarifa > 0 ? <span style={{ fontWeight: 600, fontSize: 15, color: '#16a34a' }}>{fmtPeso(l.total)}</span> : <span style={{ fontSize: 12, color: '#94a3b8' }}>Cargar tarifa</span>}
-                        </td>
-                      </tr>
-                    )
-                  })}
-                </tbody>
-              </table>
+              <div style={{ overflowX: 'auto' }}>
+                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+                  <thead>
+                    <tr style={{ background: '#f8fafc' }}>
+                      <th style={{ padding: '10px 12px', textAlign: 'left', fontWeight: 500, color: '#64748b', fontSize: 11, textTransform: 'uppercase' }}>Empleado</th>
+                      <th style={{ padding: '10px 8px', textAlign: 'center', fontWeight: 500, color: '#64748b', fontSize: 11, textTransform: 'uppercase' }}>Dias</th>
+                      <th style={{ padding: '10px 8px', textAlign: 'center', fontWeight: 500, color: '#64748b', fontSize: 11, textTransform: 'uppercase' }}>Hs norm.</th>
+                      <th style={{ padding: '10px 8px', textAlign: 'center', fontWeight: 500, color: '#64748b', fontSize: 11, textTransform: 'uppercase' }}>Hs extra</th>
+                      <th style={{ padding: '10px 8px', textAlign: 'center', fontWeight: 500, color: '#dc2626', fontSize: 11, textTransform: 'uppercase' }}>Tardanza</th>
+                      <th style={{ padding: '10px 8px', textAlign: 'center', fontWeight: 500, color: '#16a34a', fontSize: 11, textTransform: 'uppercase' }}>Premios</th>
+                      <th style={{ padding: '10px 12px', textAlign: 'right', fontWeight: 500, color: '#64748b', fontSize: 11, textTransform: 'uppercase' }}>Total</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {empleados.filter(e => !e.es_admin).map(emp => {
+                      const l = calcularLiquidacion(emp.id)
+                      const tarifa = tarifas[emp.id] || 0
+                      if (l.dias === 0 && !tarifa) return null
+                      return (
+                        <tr key={emp.id} style={{ borderTop: '1px solid #f1f5f9' }}>
+                          <td style={{ padding: '12px 12px' }}>
+                            <div style={{ fontWeight: 500 }}>{emp.nombre}</div>
+                            <div style={{ fontSize: 11, color: '#94a3b8' }}>{tarifa > 0 ? `${fmtPeso(tarifa)}/h` : 'Sin tarifa'}</div>
+                          </td>
+                          <td style={{ padding: '12px 8px', textAlign: 'center' }}>
+                            <span style={{ background: '#f1f5f9', padding: '2px 8px', borderRadius: 20, fontSize: 12 }}>{l.dias}/{l.diasLaborables}</span>
+                          </td>
+                          <td style={{ padding: '12px 8px', textAlign: 'center' }}>
+                            <div>{l.hn}h</div>
+                            {tarifa > 0 && <div style={{ fontSize: 11, color: '#94a3b8' }}>{fmtPeso(l.tn)}</div>}
+                          </td>
+                          <td style={{ padding: '12px 8px', textAlign: 'center' }}>
+                            <div style={{ color: l.he > 0 ? '#d97706' : '#94a3b8' }}>{l.he}h</div>
+                            {tarifa > 0 && l.he > 0 && <div style={{ fontSize: 11, color: '#d97706' }}>{fmtPeso(l.te)}</div>}
+                          </td>
+                          <td style={{ padding: '12px 8px', textAlign: 'center' }}>
+                            {l.tardanzaMin > 0 ? (
+                              <div>
+                                <span style={{ color: '#dc2626', fontSize: 12 }}>{l.tardanzaMin}min</span>
+                                {tarifa > 0 && <div style={{ fontSize: 11, color: '#dc2626' }}>-{fmtPeso(l.tardanzaMin/60*tarifa)}</div>}
+                              </div>
+                            ) : <span style={{ color: '#94a3b8', fontSize: 12 }}>—</span>}
+                          </td>
+                          <td style={{ padding: '12px 8px', textAlign: 'center' }}>
+                            <div style={{ display: 'flex', flexDirection: 'column', gap: 2, alignItems: 'center' }}>
+                              {l.tienePresentismo && premioPresentismo > 0 && (
+                                <span style={{ background: '#dcfce7', color: '#166534', padding: '2px 6px', borderRadius: 6, fontSize: 11 }}>
+                                  Pres. {fmtPeso(l.bonoPresentismo)}
+                                </span>
+                              )}
+                              {l.tienePuntualidad && premioPuntualidad > 0 && (
+                                <span style={{ background: '#dbeafe', color: '#1e40af', padding: '2px 6px', borderRadius: 6, fontSize: 11 }}>
+                                  Punt. {fmtPeso(l.bonoPuntualidad)}
+                                </span>
+                              )}
+                              {!l.tienePresentismo && !l.tienePuntualidad && <span style={{ color: '#94a3b8', fontSize: 12 }}>—</span>}
+                            </div>
+                          </td>
+                          <td style={{ padding: '12px 12px', textAlign: 'right' }}>
+                            {tarifa > 0 ? <span style={{ fontWeight: 600, fontSize: 15, color: '#16a34a' }}>{fmtPeso(l.total)}</span> : <span style={{ fontSize: 12, color: '#94a3b8' }}>Cargar tarifa</span>}
+                          </td>
+                        </tr>
+                      )
+                    })}
+                  </tbody>
+                </table>
+              </div>
             </div>
           </div>
         )}
@@ -599,10 +715,8 @@ function TurnoCell({ turno, onSave }) {
         </label>
         {!franco && (
           <>
-            <input type="time" value={entrada} onChange={e => setEntrada(e.target.value)}
-              style={{ width: 90, border: '1px solid #e2e8f0', borderRadius: 6, padding: '3px 6px', fontSize: 12 }} />
-            <input type="time" value={salida} onChange={e => setSalida(e.target.value)}
-              style={{ width: 90, border: '1px solid #e2e8f0', borderRadius: 6, padding: '3px 6px', fontSize: 12 }} />
+            <input type="time" value={entrada} onChange={e => setEntrada(e.target.value)} style={{ width: 90, border: '1px solid #e2e8f0', borderRadius: 6, padding: '3px 6px', fontSize: 12 }} />
+            <input type="time" value={salida} onChange={e => setSalida(e.target.value)} style={{ width: 90, border: '1px solid #e2e8f0', borderRadius: 6, padding: '3px 6px', fontSize: 12 }} />
           </>
         )}
         <div style={{ display: 'flex', gap: 4 }}>
