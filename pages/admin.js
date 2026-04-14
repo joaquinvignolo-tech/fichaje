@@ -23,7 +23,9 @@ export default function Admin() {
   const [recargo, setRecargo] = useState(50)
   const [horasJornada, setHorasJornada] = useState(8)
   const [horaAlerta, setHoraAlerta] = useState('09:00')
-  const [emailAlerta, setEmailAlerta] = useState('')
+  const [borrandoId, setBorrandoId] = useState(null)
+  const [fechaBorrar, setFechaBorrar] = useState(new Date().toISOString().slice(0,10))
+  const [empBorrar, setEmpBorrar] = useState('')
 
   useEffect(() => {
     if (autenticado) cargarDatos()
@@ -75,6 +77,28 @@ export default function Admin() {
     await cargarDatos()
   }
 
+  async function borrarRegistro(id) {
+    if (!confirm('Borrar este registro?')) return
+    setBorrandoId(id)
+    await supabase.from('fichajes').delete().eq('id', id)
+    await cargarDatos()
+    setBorrandoId(null)
+  }
+
+  async function borrarPorFiltro() {
+    let msg = '¿Borrar registros'
+    if (empBorrar) msg += ` de ${empleados.find(e=>e.id===empBorrar)?.nombre}`
+    msg += ` del ${fechaBorrar}?`
+    if (!confirm(msg)) return
+    let query = supabase.from('fichajes').delete()
+      .gte('hora', fechaBorrar + 'T00:00:00')
+      .lte('hora', fechaBorrar + 'T23:59:59')
+    if (empBorrar) query = query.eq('empleado_id', empBorrar)
+    await query
+    await cargarDatos()
+    alert('Registros borrados.')
+  }
+
   function horasTrabajadas(empId) {
     const logs = fichajes.filter(f => f.empleado_id === empId).sort((a,b) => new Date(a.hora)-new Date(b.hora))
     let total = 0
@@ -98,8 +122,7 @@ export default function Admin() {
     let hn = 0, he = 0
     Object.values(dias).forEach(h => { if (h <= horasJornada) { hn += h } else { hn += horasJornada; he += h - horasJornada } })
     const tarifa = tarifas[empId] || 0
-    const tn = Math.round(hn * tarifa)
-    const te = Math.round(he * tarifa * (1 + recargo/100))
+    const tn = Math.round(hn * tarifa); const te = Math.round(he * tarifa * (1 + recargo/100))
     return { dias: Object.keys(dias).length, hn: Math.round(hn*10)/10, he: Math.round(he*10)/10, tn, te, total: tn+te }
   }
 
@@ -117,28 +140,14 @@ export default function Admin() {
   }
 
   function verificarAlertas() {
-    const [hAlerta, mAlerta] = horaAlerta.split(':').map(Number)
+    const [hA, mA] = horaAlerta.split(':').map(Number)
     const ahora = new Date()
-    const horaActual = ahora.getHours() * 60 + ahora.getMinutes()
-    const horaLimite = hAlerta * 60 + mAlerta
-    if (horaActual < horaLimite) {
-      alert(`Son las ${fmtHoraStr(ahora.toISOString())} — todavia no llegó la hora limite de ${horaAlerta}`)
-      return
+    if (ahora.getHours() * 60 + ahora.getMinutes() < hA * 60 + mA) {
+      alert(`Todavia no llegó la hora limite de ${horaAlerta}`); return
     }
-    const empSinFichar = empleados.filter(emp => {
-      if (emp.es_admin) return false
-      const fichajesHoy = fichajes.filter(f => f.empleado_id === emp.id)
-      return fichajesHoy.length === 0
-    })
-    if (empSinFichar.length === 0) {
-      alert('Todos los empleados ficharon entrada hoy.')
-    } else {
-      alert(`Los siguientes empleados NO ficharon entrada:\n\n${empSinFichar.map(e => '• ' + e.nombre).join('\n')}`)
-    }
-  }
-
-  function abrirMapa(lat, lng, nombre) {
-    window.open(`https://www.google.com/maps?q=${lat},${lng}&z=17&marker=${lat},${lng}`, '_blank')
+    const sin = empleados.filter(emp => !emp.es_admin && fichajes.filter(f => f.empleado_id === emp.id).length === 0)
+    if (sin.length === 0) alert('Todos ficharon entrada hoy.')
+    else alert(`Sin fichar:\n\n${sin.map(e => '• ' + e.nombre).join('\n')}`)
   }
 
   function fmtHoraStr(iso) {
@@ -151,10 +160,7 @@ export default function Admin() {
     return logs.length > 0 && logs[0].accion === 'entrada'
   }).length
 
-  const noFicharonHoy = empleados.filter(emp => {
-    if (emp.es_admin) return false
-    return fichajes.filter(f => f.empleado_id === emp.id).length === 0
-  })
+  const noFicharonHoy = empleados.filter(emp => !emp.es_admin && fichajes.filter(f => f.empleado_id === emp.id).length === 0)
 
   if (!autenticado) {
     return (
@@ -189,11 +195,7 @@ export default function Admin() {
         <div style={{ fontWeight: 600, fontSize: 17 }}>Panel de administracion</div>
         <div style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
           <div style={{ fontSize: 13, color: '#94a3b8' }}>{presentes} presentes</div>
-          {noFicharonHoy.length > 0 && (
-            <div style={{ background: '#dc2626', color: '#fff', borderRadius: 20, padding: '2px 10px', fontSize: 12 }}>
-              {noFicharonHoy.length} sin fichar
-            </div>
-          )}
+          {noFicharonHoy.length > 0 && <div style={{ background: '#dc2626', color: '#fff', borderRadius: 20, padding: '2px 10px', fontSize: 12 }}>{noFicharonHoy.length} sin fichar</div>}
           <button onClick={() => router.push('/')} style={{ background: 'rgba(255,255,255,0.1)', border: 'none', color: '#fff', borderRadius: 8, padding: '7px 14px', fontSize: 13, cursor: 'pointer' }}>Fichaje</button>
         </div>
       </div>
@@ -216,34 +218,61 @@ export default function Admin() {
         )}
 
         {tab === 'hoy' && (
-          <div style={{ background: '#fff', border: '1px solid #e2e8f0', borderRadius: 14 }}>
-            {fichajes.length === 0 && <div style={{ padding: '3rem', textAlign: 'center', color: '#94a3b8', fontSize: 14 }}>Sin registros.</div>}
-            {fichajes.map(f => (
-              <div key={f.id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '12px 16px', borderBottom: '1px solid #f1f5f9' }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-                  {f.foto_url ? (
-                    <img src={f.foto_url} onClick={() => setFotoModal({ url: f.foto_url, nombre: f.empleados?.nombre, accion: f.accion, hora: fmtHoraStr(f.hora) })}
-                      style={{ width: 44, height: 44, borderRadius: 8, objectFit: 'cover', cursor: 'pointer', border: '1px solid #e2e8f0' }} alt="foto" />
-                  ) : (
-                    <div style={{ width: 44, height: 44, borderRadius: 8, background: '#f1f5f9', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 18 }}>👤</div>
-                  )}
-                  <div>
-                    <div style={{ fontWeight: 500, fontSize: 14 }}>{f.empleados?.nombre}</div>
-                    <div style={{ fontSize: 12, color: '#94a3b8' }}>{f.empleados?.rol}</div>
+          <div>
+            {/* Borrar por filtro */}
+            <div style={{ background: '#fff', border: '1px solid #e2e8f0', borderRadius: 12, padding: '14px 16px', marginBottom: 14, display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'flex-end' }}>
+              <div>
+                <div style={{ fontSize: 12, color: '#64748b', marginBottom: 4 }}>Borrar registros del</div>
+                <input type="date" value={fechaBorrar} onChange={e => setFechaBorrar(e.target.value)}
+                  style={{ border: '1px solid #e2e8f0', borderRadius: 8, padding: '6px 10px', fontSize: 13 }} />
+              </div>
+              <div>
+                <div style={{ fontSize: 12, color: '#64748b', marginBottom: 4 }}>Empleado (opcional)</div>
+                <select value={empBorrar} onChange={e => setEmpBorrar(e.target.value)}
+                  style={{ border: '1px solid #e2e8f0', borderRadius: 8, padding: '6px 10px', fontSize: 13, background: '#fff' }}>
+                  <option value="">Todos</option>
+                  {empleados.filter(e => !e.es_admin).map(e => <option key={e.id} value={e.id}>{e.nombre}</option>)}
+                </select>
+              </div>
+              <button onClick={borrarPorFiltro}
+                style={{ background: '#fee2e2', color: '#dc2626', border: '1px solid #fca5a5', borderRadius: 8, padding: '7px 14px', fontSize: 13, cursor: 'pointer', fontWeight: 500 }}>
+                Borrar
+              </button>
+            </div>
+
+            <div style={{ background: '#fff', border: '1px solid #e2e8f0', borderRadius: 14 }}>
+              {fichajes.length === 0 && <div style={{ padding: '3rem', textAlign: 'center', color: '#94a3b8', fontSize: 14 }}>Sin registros.</div>}
+              {fichajes.map(f => (
+                <div key={f.id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '12px 16px', borderBottom: '1px solid #f1f5f9' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                    {f.foto_url ? (
+                      <img src={f.foto_url} onClick={() => setFotoModal({ url: f.foto_url, nombre: f.empleados?.nombre, accion: f.accion, hora: fmtHoraStr(f.hora) })}
+                        style={{ width: 44, height: 44, borderRadius: 8, objectFit: 'cover', cursor: 'pointer', border: '1px solid #e2e8f0' }} alt="foto" />
+                    ) : (
+                      <div style={{ width: 44, height: 44, borderRadius: 8, background: '#f1f5f9', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 18 }}>👤</div>
+                    )}
+                    <div>
+                      <div style={{ fontWeight: 500, fontSize: 14 }}>{f.empleados?.nombre}</div>
+                      <div style={{ fontSize: 12, color: '#94a3b8' }}>{f.empleados?.rol}</div>
+                    </div>
+                  </div>
+                  <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                    <span style={{ padding: '3px 10px', borderRadius: 20, fontSize: 12, background: f.accion==='entrada'?'#dcfce7':'#fee2e2', color: f.accion==='entrada'?'#166534':'#991b1b' }}>{f.accion}</span>
+                    <span style={{ fontFamily: 'monospace', fontSize: 14, color: '#475569' }}>{fmtHoraStr(f.hora)}</span>
+                    {f.lat && f.lng && (
+                      <button onClick={() => window.open(`https://www.google.com/maps?q=${f.lat},${f.lng}&z=17`, '_blank')}
+                        style={{ background: '#dbeafe', border: 'none', color: '#1e40af', borderRadius: 8, padding: '4px 10px', fontSize: 12, cursor: 'pointer' }}>
+                        Mapa
+                      </button>
+                    )}
+                    <button onClick={() => borrarRegistro(f.id)} disabled={borrandoId === f.id}
+                      style={{ background: 'none', border: 'none', color: '#dc2626', fontSize: 16, cursor: 'pointer', padding: '4px 6px' }}>
+                      ✕
+                    </button>
                   </div>
                 </div>
-                <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-                  <span style={{ padding: '3px 10px', borderRadius: 20, fontSize: 12, background: f.accion==='entrada'?'#dcfce7':'#fee2e2', color: f.accion==='entrada'?'#166534':'#991b1b' }}>{f.accion}</span>
-                  <span style={{ fontFamily: 'monospace', fontSize: 14, color: '#475569' }}>{fmtHoraStr(f.hora)}</span>
-                  {f.lat && f.lng && (
-                    <button onClick={() => abrirMapa(f.lat, f.lng, f.empleados?.nombre)}
-                      style={{ background: '#dbeafe', border: 'none', color: '#1e40af', borderRadius: 8, padding: '4px 10px', fontSize: 12, cursor: 'pointer' }}>
-                      Ver mapa
-                    </button>
-                  )}
-                </div>
-              </div>
-            ))}
+              ))}
+            </div>
           </div>
         )}
 
@@ -290,29 +319,25 @@ export default function Admin() {
 
         {tab === 'alertas' && (
           <div>
-            {noFicharonHoy.length > 0 && (
+            {noFicharonHoy.length > 0 ? (
               <div style={{ background: '#fef2f2', border: '1px solid #fca5a5', borderRadius: 14, padding: '16px 20px', marginBottom: 16 }}>
-                <div style={{ fontWeight: 500, color: '#dc2626', marginBottom: 8 }}>Sin fichar hoy ({fechaFiltro})</div>
-                {noFicharonHoy.map(emp => (
-                  <div key={emp.id} style={{ fontSize: 14, color: '#475569', padding: '4px 0' }}>• {emp.nombre} — {emp.rol}</div>
-                ))}
+                <div style={{ fontWeight: 500, color: '#dc2626', marginBottom: 8 }}>Sin fichar hoy</div>
+                {noFicharonHoy.map(emp => <div key={emp.id} style={{ fontSize: 14, color: '#475569', padding: '4px 0' }}>• {emp.nombre} — {emp.rol}</div>)}
               </div>
-            )}
-            {noFicharonHoy.length === 0 && (
+            ) : (
               <div style={{ background: '#f0fdf4', border: '1px solid #86efac', borderRadius: 14, padding: '16px 20px', marginBottom: 16 }}>
                 <div style={{ fontWeight: 500, color: '#16a34a' }}>Todos ficharon entrada hoy</div>
               </div>
             )}
             <div style={{ background: '#fff', border: '1px solid #e2e8f0', borderRadius: 14, padding: '20px' }}>
-              <div style={{ fontWeight: 500, fontSize: 15, marginBottom: 16 }}>Verificar ausencias manualmente</div>
-              <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+              <div style={{ fontWeight: 500, fontSize: 15, marginBottom: 16 }}>Verificar por hora limite</div>
+              <div style={{ display: 'flex', gap: 10, alignItems: 'flex-end', flexWrap: 'wrap' }}>
                 <div>
-                  <div style={{ fontSize: 12, color: '#64748b', marginBottom: 4 }}>Hora limite de entrada</div>
+                  <div style={{ fontSize: 12, color: '#64748b', marginBottom: 4 }}>Hora limite</div>
                   <input type="time" value={horaAlerta} onChange={e => setHoraAlerta(e.target.value)}
                     style={{ border: '1px solid #e2e8f0', borderRadius: 8, padding: '6px 10px', fontSize: 14 }} />
                 </div>
-                <button onClick={verificarAlertas}
-                  style={{ marginTop: 20, background: '#1e293b', color: '#fff', border: 'none', borderRadius: 9, padding: '10px 20px', fontSize: 14, fontWeight: 500, cursor: 'pointer' }}>
+                <button onClick={verificarAlertas} style={{ background: '#1e293b', color: '#fff', border: 'none', borderRadius: 9, padding: '10px 20px', fontSize: 14, fontWeight: 500, cursor: 'pointer' }}>
                   Verificar ahora
                 </button>
               </div>
@@ -356,7 +381,7 @@ export default function Admin() {
                 ))}
               </div>
             </div>
-            <div style={{ background: '#fff', border: '1px solid #e2e8f0', borderRadius: 14, overflow: 'hidden', marginBottom: 16 }}>
+            <div style={{ background: '#fff', border: '1px solid #e2e8f0', borderRadius: 14, overflow: 'hidden' }}>
               <div style={{ padding: '16px 20px', borderBottom: '1px solid #f1f5f9', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                 <div style={{ fontWeight: 500, fontSize: 15 }}>Liquidacion — {new Date(mesFiltro+'-02').toLocaleDateString('es-AR',{month:'long',year:'numeric'})}</div>
                 <button onClick={exportarExcel} style={{ background: '#16a34a', color: '#fff', border: 'none', borderRadius: 8, padding: '8px 16px', fontSize: 13, fontWeight: 500, cursor: 'pointer' }}>Exportar Excel</button>
