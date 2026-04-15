@@ -49,6 +49,11 @@ export default function Admin() {
   const [diasPuntualidad, setDiasPuntualidad] = useState(20)
   const [toleranciaTardanza, setToleranciaTardanza] = useState(10)
   const [descuentoTardanza, setDescuentoTardanza] = useState(true)
+  const [empManual, setEmpManual] = useState('')
+  const [accionManual, setAccionManual] = useState('entrada')
+  const [fechaManual, setFechaManual] = useState(toArgDate(new Date()))
+  const [horaManual, setHoraManual] = useState('09:00')
+  const [guardandoManual, setGuardandoManual] = useState(false)
 
   useEffect(() => {
     if (autenticado) { cargarDatos(); cargarTurnos() }
@@ -104,6 +109,22 @@ export default function Admin() {
     if (!confirm('Dar de baja este empleado?')) return
     await supabase.from('empleados').update({ activo: false }).eq('id', id)
     await cargarDatos()
+  }
+
+  async function agregarFichajeManual() {
+    if (!empManual) return
+    setGuardandoManual(true)
+    // Convertir hora argentina a UTC sumando 3 horas
+    const horaUTC = new Date(`${fechaManual}T${horaManual}:00-03:00`).toISOString()
+    await supabase.from('fichajes').insert({
+      empleado_id: empManual,
+      accion: accionManual,
+      hora: horaUTC
+    })
+    setEmpManual('')
+    setHoraManual('09:00')
+    await cargarDatos()
+    setGuardandoManual(false)
   }
 
   async function borrarRegistro(id) {
@@ -341,6 +362,40 @@ export default function Admin() {
 
         {tab === 'hoy' && (
           <div>
+            {/* Agregar fichaje manual */}
+            <div style={{ background: '#fff', border: '1px solid #e2e8f0', borderRadius: 12, padding: '14px 16px', marginBottom: 14 }}>
+              <div style={{ fontWeight: 500, fontSize: 14, marginBottom: 12 }}>Agregar fichaje manual</div>
+              <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'flex-end' }}>
+                <div>
+                  <div style={{ fontSize: 12, color: '#64748b', marginBottom: 4 }}>Empleado</div>
+                  <select value={empManual} onChange={e => setEmpManual(e.target.value)} style={{ border: '1px solid #e2e8f0', borderRadius: 8, padding: '6px 10px', fontSize: 13, background: '#fff' }}>
+                    <option value="">Elegir...</option>
+                    {empleados.filter(e => !e.es_admin).map(e => <option key={e.id} value={e.id}>{e.nombre}</option>)}
+                  </select>
+                </div>
+                <div>
+                  <div style={{ fontSize: 12, color: '#64748b', marginBottom: 4 }}>Tipo</div>
+                  <select value={accionManual} onChange={e => setAccionManual(e.target.value)} style={{ border: '1px solid #e2e8f0', borderRadius: 8, padding: '6px 10px', fontSize: 13, background: '#fff' }}>
+                    <option value="entrada">Entrada</option>
+                    <option value="salida">Salida</option>
+                  </select>
+                </div>
+                <div>
+                  <div style={{ fontSize: 12, color: '#64748b', marginBottom: 4 }}>Fecha</div>
+                  <input type="date" value={fechaManual} onChange={e => setFechaManual(e.target.value)} style={{ border: '1px solid #e2e8f0', borderRadius: 8, padding: '6px 10px', fontSize: 13 }} />
+                </div>
+                <div>
+                  <div style={{ fontSize: 12, color: '#64748b', marginBottom: 4 }}>Hora</div>
+                  <input type="time" value={horaManual} onChange={e => setHoraManual(e.target.value)} style={{ border: '1px solid #e2e8f0', borderRadius: 8, padding: '6px 10px', fontSize: 13 }} />
+                </div>
+                <button onClick={agregarFichajeManual} disabled={!empManual || guardandoManual}
+                  style={{ background: '#1e293b', color: '#fff', border: 'none', borderRadius: 8, padding: '7px 16px', fontSize: 13, fontWeight: 500, cursor: 'pointer', opacity: !empManual ? 0.4 : 1 }}>
+                  {guardandoManual ? 'Guardando...' : 'Agregar'}
+                </button>
+              </div>
+            </div>
+
+            {/* Borrar por filtro */}
             <div style={{ background: '#fff', border: '1px solid #e2e8f0', borderRadius: 12, padding: '14px 16px', marginBottom: 14, display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'flex-end' }}>
               <div>
                 <div style={{ fontSize: 12, color: '#64748b', marginBottom: 4 }}>Borrar registros del</div>
