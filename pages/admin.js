@@ -4,6 +4,14 @@ import { useRouter } from 'next/router'
 
 const DIAS = ['Domingo','Lunes','Martes','Miercoles','Jueves','Viernes','Sabado']
 
+function toArgDate(date) {
+  return new Date(date).toLocaleDateString('sv-SE', { timeZone: 'America/Argentina/Buenos_Aires' })
+}
+
+function fmtArgHora(iso) {
+  return new Date(iso).toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit', hour12: false, timeZone: 'America/Argentina/Buenos_Aires' })
+}
+
 export default function Admin() {
   const router = useRouter()
   const [autenticado, setAutenticado] = useState(false)
@@ -14,8 +22,8 @@ export default function Admin() {
   const [fichajes, setFichajes] = useState([])
   const [fichajesMes, setFichajesMes] = useState([])
   const [turnos, setTurnos] = useState([])
-  const [fechaFiltro, setFechaFiltro] = useState(new Date().toISOString().slice(0,10))
-  const [mesFiltro, setMesFiltro] = useState(new Date().toISOString().slice(0,7))
+  const [fechaFiltro, setFechaFiltro] = useState(toArgDate(new Date()))
+  const [mesFiltro, setMesFiltro] = useState(toArgDate(new Date()).slice(0,7))
   const [nuevoNombre, setNuevoNombre] = useState('')
   const [nuevoRol, setNuevoRol] = useState('')
   const [nuevoPin, setNuevoPin] = useState('')
@@ -27,7 +35,7 @@ export default function Admin() {
   const [horasJornada, setHorasJornada] = useState(8)
   const [horaAlerta, setHoraAlerta] = useState('09:00')
   const [borrandoId, setBorrandoId] = useState(null)
-  const [fechaBorrar, setFechaBorrar] = useState(new Date().toISOString().slice(0,10))
+  const [fechaBorrar, setFechaBorrar] = useState(toArgDate(new Date()))
   const [empBorrar, setEmpBorrar] = useState('')
   // Configuracion premios y descuentos
   const [premioPresentismo, setPremioPresentismo] = useState(0)
@@ -48,7 +56,7 @@ export default function Admin() {
     const { data: emps } = await supabase.from('empleados').select('*').eq('activo', true).order('nombre')
     const { data: fich } = await supabase
       .from('fichajes').select('*, empleados(nombre, rol)')
-      .gte('hora', fechaFiltro + 'T00:00:00').lte('hora', fechaFiltro + 'T23:59:59')
+      .gte('hora', fechaFiltro + 'T03:00:00Z').lte('hora', fechaFiltro + 'T26:59:59Z')
       .order('hora', { ascending: false })
     setEmpleados(emps || [])
     setFichajes(fich || [])
@@ -60,12 +68,13 @@ export default function Admin() {
   }
 
   async function cargarFichajesMes() {
-    const inicio = mesFiltro + '-01T00:00:00'
+    const inicio = mesFiltro + '-01T03:00:00Z'
     const fin = new Date(mesFiltro + '-01')
     fin.setMonth(fin.getMonth() + 1)
+    const finStr = toArgDate(fin) + 'T26:59:59Z'
     const { data } = await supabase
       .from('fichajes').select('*, empleados(nombre, rol)')
-      .gte('hora', inicio).lte('hora', fin.toISOString().slice(0,10) + 'T23:59:59')
+      .gte('hora', inicio).lte('hora', finStr)
       .order('hora', { ascending: true })
     setFichajesMes(data || [])
   }
@@ -105,7 +114,7 @@ export default function Admin() {
     msg += ` del ${fechaBorrar}?`
     if (!confirm(msg)) return
     let query = supabase.from('fichajes').delete()
-      .gte('hora', fechaBorrar + 'T00:00:00').lte('hora', fechaBorrar + 'T23:59:59')
+      .gte('hora', fechaBorrar + 'T03:00:00Z').lte('hora', fechaBorrar + 'T26:59:59Z')
     if (empBorrar) query = query.eq('empleado_id', empBorrar)
     await query
     await cargarDatos()
@@ -146,7 +155,7 @@ export default function Admin() {
       if (logs[i].accion === 'entrada' && logs[i+1].accion === 'salida') {
         const entrada = new Date(logs[i].hora)
         const salida = new Date(logs[i+1].hora)
-        const dia = logs[i].hora.slice(0,10)
+        const dia = toArgDate(new Date(logs[i].hora))
         const horas = (salida - entrada) / 3600000
 
         // Calcular tardanza
@@ -184,7 +193,7 @@ export default function Admin() {
     for (let d = new Date(inicio); d < fin; d.setDate(d.getDate() + 1)) {
       const diaSem = d.getDay()
       const turno = getTurno(empId, diaSem)
-      if (!turno || !turno.es_franco) diasLaborablesMes.push(d.toISOString().slice(0,10))
+      if (!turno || !turno.es_franco) diasLaborablesMes.push(toArgDate(d))
     }
 
     const horasDescuento = minDescuento / 60
@@ -259,9 +268,7 @@ export default function Admin() {
     return { tipo: 'tarde', label: `Tarde ${diff}min` }
   }
 
-  function fmtHoraStr(iso) {
-    return new Date(iso).toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit', hour12: false })
-  }
+  function fmtHoraStr(iso) { return fmtArgHora(iso) }
   function fmtPeso(n) { return '$' + Math.round(n).toLocaleString('es-AR') }
 
   const presentes = empleados.filter(emp => {
