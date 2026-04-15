@@ -8,6 +8,12 @@ function toArgDate(date) {
   return new Date(date).toLocaleDateString('sv-SE', { timeZone: 'America/Argentina/Buenos_Aires' })
 }
 
+function nextArgDate(dateStr) {
+  const d = new Date(dateStr + 'T12:00:00Z')
+  d.setDate(d.getDate() + 1)
+  return d.toLocaleDateString('sv-SE', { timeZone: 'America/Argentina/Buenos_Aires' })
+}
+
 function fmtArgHora(iso) {
   return new Date(iso).toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit', hour12: false, timeZone: 'America/Argentina/Buenos_Aires' })
 }
@@ -56,7 +62,7 @@ export default function Admin() {
     const { data: emps } = await supabase.from('empleados').select('*').eq('activo', true).order('nombre')
     const { data: fich } = await supabase
       .from('fichajes').select('*, empleados(nombre, rol)')
-      .gte('hora', fechaFiltro + 'T03:00:00Z').lte('hora', fechaFiltro + 'T26:59:59Z')
+      .gte('hora', fechaFiltro + 'T03:00:00Z').lte('hora', nextArgDate(fechaFiltro) + 'T02:59:59Z')
       .order('hora', { ascending: false })
     setEmpleados(emps || [])
     setFichajes(fich || [])
@@ -71,7 +77,7 @@ export default function Admin() {
     const inicio = mesFiltro + '-01T03:00:00Z'
     const fin = new Date(mesFiltro + '-01')
     fin.setMonth(fin.getMonth() + 1)
-    const finStr = toArgDate(fin) + 'T26:59:59Z'
+    const finStr = nextArgDate(toArgDate(fin)) + 'T02:59:59Z'
     const { data } = await supabase
       .from('fichajes').select('*, empleados(nombre, rol)')
       .gte('hora', inicio).lte('hora', finStr)
@@ -114,7 +120,7 @@ export default function Admin() {
     msg += ` del ${fechaBorrar}?`
     if (!confirm(msg)) return
     let query = supabase.from('fichajes').delete()
-      .gte('hora', fechaBorrar + 'T03:00:00Z').lte('hora', fechaBorrar + 'T26:59:59Z')
+      .gte('hora', fechaBorrar + 'T03:00:00Z').lte('hora', nextArgDate(fechaBorrar) + 'T02:59:59Z')
     if (empBorrar) query = query.eq('empleado_id', empBorrar)
     await query
     await cargarDatos()
