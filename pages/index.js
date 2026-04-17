@@ -21,6 +21,10 @@ function initials(name) {
   return name.split(' ').slice(0,2).map(w=>w[0]).join('').toUpperCase()
 }
 
+function esMobile() {
+  return /Android|iPhone|iPad|iPod/i.test(navigator.userAgent)
+}
+
 export default function Home() {
   const router = useRouter()
   const [empleados, setEmpleados] = useState([])
@@ -35,7 +39,11 @@ export default function Home() {
   const [viendoHistorial, setViendoHistorial] = useState(false)
   const [historialEmpleado, setHistorialEmpleado] = useState([])
   const [empleadoActual, setEmpleadoActual] = useState(null)
+  const [webcamActiva, setWebcamActiva] = useState(false)
   const fileInputRef = useRef(null)
+  const videoRef = useRef(null)
+  const canvasRef = useRef(null)
+  const streamRef = useRef(null)
 
   useEffect(() => {
     cargarDatos()
@@ -86,6 +94,7 @@ export default function Home() {
     setFotoCapturada(null)
     setEsperandoFoto(false)
     setViendoHistorial(false)
+    detenerWebcam()
   }
 
   function presionarPin(digit) {
@@ -93,6 +102,42 @@ export default function Home() {
   }
 
   function borrarPin() { setPin(p => p.slice(0, -1)) }
+
+  async function abrirCamara() {
+    if (esMobile()) {
+      fileInputRef.current && fileInputRef.current.click()
+    } else {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ video: { width: 320, height: 240 } })
+        streamRef.current = stream
+        setWebcamActiva(true)
+        setTimeout(() => {
+          if (videoRef.current) { videoRef.current.srcObject = stream; videoRef.current.play() }
+        }, 100)
+      } catch(e) {
+        fileInputRef.current && fileInputRef.current.click()
+      }
+    }
+  }
+
+  function sacarFotoWebcam() {
+    if (!videoRef.current || !canvasRef.current) return
+    const canvas = canvasRef.current
+    canvas.width = 320; canvas.height = 240
+    canvas.getContext('2d').drawImage(videoRef.current, 0, 0, 320, 240)
+    const foto = canvas.toDataURL('image/jpeg', 0.8)
+    setFotoCapturada(foto)
+    detenerWebcam()
+    setEsperandoFoto(false)
+  }
+
+  function detenerWebcam() {
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach(t => t.stop())
+      streamRef.current = null
+    }
+    setWebcamActiva(false)
+  }
 
   function handleFotoSeleccionada(e) {
     const file = e.target.files[0]
@@ -130,7 +175,7 @@ export default function Home() {
 
     if (!fotoCapturada) {
       setEsperandoFoto(true)
-      setTimeout(() => fileInputRef.current && fileInputRef.current.click(), 100)
+      await abrirCamara()
       return
     }
 
@@ -279,12 +324,27 @@ export default function Home() {
               {modoHistorial ? 'Ingresa tu PIN para ver tus horas' : estaAdentro(seleccionado.id) ? 'Registrar salida' : 'Registrar entrada'}
             </div>
 
-            {esperandoFoto && !fotoCapturada && (
+            {esperandoFoto && !fotoCapturada && !webcamActiva && (
               <div style={{ marginBottom: 16, padding: '16px', background: '#f1f5f9', borderRadius: 10 }}>
-                <div style={{ fontSize: 14, color: '#475569', marginBottom: 12 }}>Saca una selfie para continuar</div>
-                <button onClick={() => fileInputRef.current && fileInputRef.current.click()}
+                <div style={{ fontSize: 14, color: '#475569', marginBottom: 12 }}>Saca una foto para continuar</div>
+                <button onClick={abrirCamara}
                   style={{ width: '100%', padding: '12px', background: '#1e293b', color: '#fff', border: 'none', borderRadius: 10, fontSize: 14, fontWeight: 500, cursor: 'pointer' }}>
                   Abrir camara
+                </button>
+              </div>
+            )}
+
+            {webcamActiva && (
+              <div style={{ marginBottom: 16 }}>
+                <video ref={videoRef} autoPlay playsInline muted style={{ width: '100%', borderRadius: 10, background: '#000' }} />
+                <canvas ref={canvasRef} style={{ display: 'none' }} />
+                <button onClick={sacarFotoWebcam}
+                  style={{ marginTop: 8, width: '100%', padding: '12px', background: '#16a34a', color: '#fff', border: 'none', borderRadius: 10, fontSize: 14, fontWeight: 500, cursor: 'pointer' }}>
+                  Sacar foto
+                </button>
+                <button onClick={() => { detenerWebcam(); setEsperandoFoto(false) }}
+                  style={{ marginTop: 6, width: '100%', padding: '8px', background: 'none', border: '1px solid #e2e8f0', borderRadius: 10, fontSize: 13, color: '#64748b', cursor: 'pointer' }}>
+                  Cancelar
                 </button>
               </div>
             )}
@@ -312,7 +372,7 @@ export default function Home() {
             {estado === 'ok_entrada' && <div style={{ color: '#16a34a', fontSize: 14, fontWeight: 500, marginBottom: 12 }}>Entrada registrada</div>}
             {estado === 'ok_salida' && <div style={{ color: '#dc2626', fontSize: 14, fontWeight: 500, marginBottom: 12 }}>Salida registrada</div>}
 
-            {!esperandoFoto && (
+            {!esperandoFoto && !webcamActiva && (
               <>
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 10, marginBottom: 16 }}>
                   {[1,2,3,4,5,6,7,8,9].map(n => (
