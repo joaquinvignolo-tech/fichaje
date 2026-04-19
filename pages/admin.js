@@ -346,7 +346,7 @@ export default function Admin() {
 
       <div style={{ maxWidth: 900, margin: '0 auto', padding: '24px' }}>
         <div style={{ display: 'flex', gap: 4, marginBottom: 24, borderBottom: '1px solid #e2e8f0', overflowX: 'auto' }}>
-          {[['hoy','Registros'],['resumen','Resumen'],['turnos','Turnos'],['alertas','Alertas'],['liquidacion','Liquidacion'],['empleados','Empleados']].map(([key,label]) => (
+          {[['hoy','Registros'],['turnos','Turnos'],['alertas','Alertas'],['liquidacion','Liquidacion'],['empleados','Empleados']].map(([key,label]) => (
             <button key={key} onClick={() => setTab(key)} style={{ padding: '10px 14px', border: 'none', background: 'none', fontSize: 14, fontWeight: tab===key?600:400, color: tab===key?'#1e293b':'#64748b', borderBottom: tab===key?'2px solid #1e293b':'2px solid transparent', marginBottom: -1, cursor: 'pointer', whiteSpace: 'nowrap' }}>
               {label}
             </button>
@@ -412,32 +412,58 @@ export default function Admin() {
             </div>
             <div style={{ background: '#fff', border: '1px solid #e2e8f0', borderRadius: 14 }}>
               {fichajes.length === 0 && <div style={{ padding: '3rem', textAlign: 'center', color: '#94a3b8', fontSize: 14 }}>Sin registros.</div>}
-              {fichajes.map(f => (
-                <div key={f.id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '12px 16px', borderBottom: '1px solid #f1f5f9' }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-                    {f.foto_url ? (
-                      <img src={f.foto_url} onClick={() => setFotoModal({ url: f.foto_url, nombre: f.empleados?.nombre, accion: f.accion, hora: fmtHoraStr(f.hora) })}
-                        style={{ width: 44, height: 44, borderRadius: 8, objectFit: 'cover', cursor: 'pointer', border: '1px solid #e2e8f0' }} alt="foto" />
-                    ) : (
-                      <div style={{ width: 44, height: 44, borderRadius: 8, background: '#f1f5f9', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 18 }}>👤</div>
-                    )}
-                    <div>
-                      <div style={{ fontWeight: 500, fontSize: 14 }}>{f.empleados?.nombre}</div>
-                      <div style={{ fontSize: 12, color: '#94a3b8' }}>{f.empleados?.rol}</div>
+              {empleados.filter(e => !e.es_admin).map(emp => {
+                const logsEmp = [...fichajes].filter(f => f.empleado_id === emp.id).sort((a,b) => new Date(a.hora)-new Date(b.hora))
+                if (!logsEmp.length) return null
+                // Calcular total horas del dia
+                let totalMs = 0
+                for (let i = 0; i < logsEmp.length-1; i++) {
+                  if (logsEmp[i].accion==='entrada' && logsEmp[i+1].accion==='salida')
+                    totalMs += new Date(logsEmp[i+1].hora) - new Date(logsEmp[i].hora)
+                }
+                const th = Math.floor(totalMs/3600000); const tm = Math.floor((totalMs%3600000)/60000)
+                return (
+                  <div key={emp.id} style={{ borderBottom: '1px solid #f1f5f9', padding: '12px 16px' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                        {logsEmp[logsEmp.length-1]?.foto_url ? (
+                          <img src={logsEmp[logsEmp.length-1].foto_url} onClick={() => setFotoModal({ url: logsEmp[logsEmp.length-1].foto_url, nombre: emp.nombre, accion: '', hora: '' })}
+                            style={{ width: 40, height: 40, borderRadius: 8, objectFit: 'cover', cursor: 'pointer', border: '1px solid #e2e8f0' }} alt="foto" />
+                        ) : (
+                          <div style={{ width: 40, height: 40, borderRadius: 8, background: '#f1f5f9', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 16 }}>👤</div>
+                        )}
+                        <div>
+                          <div style={{ fontWeight: 500, fontSize: 14 }}>{emp.nombre}</div>
+                          <div style={{ fontSize: 12, color: '#94a3b8' }}>{emp.rol}</div>
+                        </div>
+                      </div>
+                      {totalMs > 0 && <span style={{ background: '#dbeafe', color: '#1e40af', padding: '3px 10px', borderRadius: 20, fontSize: 13, fontWeight: 500 }}>{th}h {tm}m</span>}
+                    </div>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                      {logsEmp.map(f => (
+                        <div key={f.id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', background: '#f8fafc', borderRadius: 8, padding: '6px 10px' }}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                            <span style={{ padding: '2px 8px', borderRadius: 20, fontSize: 11, background: f.accion==='entrada'?'#dcfce7':'#fee2e2', color: f.accion==='entrada'?'#166534':'#991b1b', fontWeight: 500 }}>{f.accion}</span>
+                            <span style={{ fontFamily: 'monospace', fontSize: 14, color: '#334155', fontWeight: 500 }}>{fmtHoraStr(f.hora)}</span>
+                            {f.foto_url && (
+                              <img src={f.foto_url} onClick={() => setFotoModal({ url: f.foto_url, nombre: emp.nombre, accion: f.accion, hora: fmtHoraStr(f.hora) })}
+                                style={{ width: 24, height: 24, borderRadius: 4, objectFit: 'cover', cursor: 'pointer', border: '1px solid #e2e8f0' }} alt="foto" />
+                            )}
+                          </div>
+                          <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                            {f.lat && f.lng && (
+                              <button onClick={() => window.open(`https://www.google.com/maps?q=${f.lat},${f.lng}&z=17`, '_blank')}
+                                style={{ background: '#dbeafe', border: 'none', color: '#1e40af', borderRadius: 6, padding: '3px 8px', fontSize: 11, cursor: 'pointer' }}>Mapa</button>
+                            )}
+                            <button onClick={() => borrarRegistro(f.id)} disabled={borrandoId === f.id}
+                              style={{ background: 'none', border: 'none', color: '#dc2626', fontSize: 14, cursor: 'pointer', padding: '2px 4px' }}>✕</button>
+                          </div>
+                        </div>
+                      ))}
                     </div>
                   </div>
-                  <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-                    <span style={{ padding: '3px 10px', borderRadius: 20, fontSize: 12, background: f.accion==='entrada'?'#dcfce7':'#fee2e2', color: f.accion==='entrada'?'#166534':'#991b1b' }}>{f.accion}</span>
-                    <span style={{ fontFamily: 'monospace', fontSize: 14, color: '#475569' }}>{fmtHoraStr(f.hora)}</span>
-                    {f.lat && f.lng && (
-                      <button onClick={() => window.open(`https://www.google.com/maps?q=${f.lat},${f.lng}&z=17`, '_blank')}
-                        style={{ background: '#dbeafe', border: 'none', color: '#1e40af', borderRadius: 8, padding: '4px 10px', fontSize: 12, cursor: 'pointer' }}>Mapa</button>
-                    )}
-                    <button onClick={() => borrarRegistro(f.id)} disabled={borrandoId === f.id}
-                      style={{ background: 'none', border: 'none', color: '#dc2626', fontSize: 16, cursor: 'pointer', padding: '4px 6px' }}>✕</button>
-                  </div>
-                </div>
-              ))}
+                )
+              })}
             </div>
           </div>
         )}
