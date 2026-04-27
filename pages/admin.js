@@ -65,16 +65,18 @@ export default function Admin() {
 
   async function cargarDatos() {
     const { data: emps } = await supabase.from('empleados').select('*').eq('activo', true).order('nombre')
-    // Para turnos nocturnos: traer desde el mediodia del dia anterior (15hs UTC = 12hs arg)
-    // hasta las 03:00 UTC del dia siguiente (00:00 arg del dia siguiente)
-    const diaAnterior = new Date(fechaFiltro + 'T12:00:00Z')
-    diaAnterior.setDate(diaAnterior.getDate() - 1)
-    const diaAnteriorStr = diaAnterior.toISOString().slice(0, 10)
+    // Traer 36 horas antes del inicio del dia seleccionado para capturar entradas de turnos nocturnos
+    // fechaFiltro en arg = fechaFiltro + T03:00:00Z en UTC (inicio del dia arg)
+    // Restamos 12 horas mas para cubrir entradas de la tarde del dia anterior
+    const inicioUTC = new Date(fechaFiltro + 'T03:00:00Z')
+    inicioUTC.setHours(inicioUTC.getHours() - 12)
+    const finUTC = new Date(fechaFiltro + 'T03:00:00Z')
+    finUTC.setDate(finUTC.getDate() + 1)
 
     const { data: fich } = await supabase
       .from('fichajes').select('*, empleados(nombre, rol)')
-      .gte('hora', diaAnteriorStr + 'T15:00:00Z')
-      .lte('hora', nextArgDate(fechaFiltro) + 'T02:59:59Z')
+      .gte('hora', inicioUTC.toISOString())
+      .lte('hora', finUTC.toISOString())
       .order('hora', { ascending: true })
     setEmpleados(emps || [])
     setFichajes(fich || [])
