@@ -436,8 +436,15 @@ export default function Admin() {
                 if (!logsEmp.length) return null
                 // Usar emparejamiento por proximidad para turnos nocturnos
                 const pares = emparejarTurnos(logsEmp)
-                // Solo mostrar pares donde la entrada corresponde al dia seleccionado en hora argentina
-                const paresDia = pares.filter(p => toArgDate(new Date(p.entrada.hora)) === fechaFiltro)
+                // Mostrar pares donde la salida es del dia seleccionado,
+                // O donde la entrada es del dia seleccionado (sin salida aun)
+                // Esto captura turnos nocturnos: entraron ayer y salieron hoy
+                const paresDia = pares.filter(p => {
+                  const fechaSalida = p.salida ? toArgDate(new Date(p.salida.hora)) : null
+                  const fechaEntrada = toArgDate(new Date(p.entrada.hora))
+                  // Incluir si: la salida es hoy, O la entrada es hoy sin salida
+                  return fechaSalida === fechaFiltro || (!p.salida && fechaEntrada === fechaFiltro)
+                })
                 // Tambien mostrar entradas sueltas del dia (sin salida aun)
                 const entradasSueltas = logsEmp.filter(f => 
                   f.accion === 'entrada' && 
