@@ -56,7 +56,9 @@ export default function Home() {
 
   async function cargarDatos() {
     const { data: emps } = await supabase.from('empleados').select('*').eq('activo', true).eq('es_admin', false).order('nombre')
-    const { data: fich } = await supabase.from('fichajes').select('*').gte('hora', new Date().toISOString().slice(0,10)).order('hora', { ascending: false })
+    // Traer ultimas 20 horas para capturar turnos nocturnos que empezaron ayer
+    const hace20hs = new Date(Date.now() - 20 * 3600000).toISOString()
+    const { data: fich } = await supabase.from('fichajes').select('*').gte('hora', hace20hs).order('hora', { ascending: false })
     setEmpleados(emps || [])
     setFichajes(fich || [])
   }
@@ -80,8 +82,19 @@ export default function Home() {
     return `${h}h ${m}m`
   }
 
+  // Detecta si tiene entrada sin salida (turno nocturno: busca en ultimas 18hs)
+  function tieneEntradaSinSalida(empId) {
+    const logs = [...fichajes].filter(f => f.empleado_id === empId).sort((a,b) => new Date(b.hora)-new Date(a.hora))
+    if (!logs.length) return null
+    if (logs[0].accion === 'entrada') {
+      const diff = new Date() - new Date(logs[0].hora)
+      if (diff < 18 * 3600000) return logs[0]
+    }
+    return null
+  }
+
   function estaAdentro(empId) {
-    const logs = fichajes.filter(f => f.empleado_id === empId)
+    const logs = [...fichajes].filter(f => f.empleado_id === empId).sort((a,b) => new Date(b.hora)-new Date(a.hora))
     if (!logs.length) return false
     return logs[0].accion === 'entrada'
   }
@@ -165,20 +178,33 @@ export default function Home() {
       setTimeout(() => setEstado(null), 1500)
       return
     }
-
-    // Si es modo historial, mostrar historial directamente
     if (modoHistorial) {
       await cargarHistorial(seleccionado)
       setSeleccionado(null); setPin(''); setEstado(null)
       return
     }
+    // Verificar si tiene entrada sin salida y quiere entrar de nuevo
+    const entradaAbierta = tieneEntradaSinSalida(seleccionado.id)
+    if (entradaAbierta && !estaAdentro(seleccionado.id) === false && estaAdentro(seleccionado.id) === true) {
+      // tiene entrada activa → quiere salir, dejarlo pasar normal
+    } else if (entradaAbierta && !estaAdentro(seleccionado.id)) {
+      // no deberia pasar pero por las dudas
+    }
+    // Si esta adentro quiere salir → OK normal
+    // Si NO esta adentro pero tiene entrada abierta en las ultimas 18hs → bloquear
+    if (!estaAdentro(seleccionado.id) && entradaAbierta) {
+      setEstado('bloqueado_entrada')
+      return
+    }
+    await confirmarFichaje(estaAdentro(seleccionado.id) ? 'salida' : 'entrada')
+  }
 
+  async function confirmarFichaje(accionForzada) {
     if (!fotoCapturada) {
       setEsperandoFoto(true)
       await abrirCamara()
       return
     }
-
     setEstado('ubicacion')
     navigator.geolocation.getCurrentPosition(
       async (pos) => {
@@ -190,7 +216,7 @@ export default function Home() {
         }
         let fotoUrl = null
         if (fotoCapturada) fotoUrl = await subirFoto(fotoCapturada, seleccionado.nombre.replace(' ', '_'))
-        const accion = estaAdentro(seleccionado.id) ? 'salida' : 'entrada'
+        const accion = accionForzada || (estaAdentro(seleccionado.id) ? 'salida' : 'entrada')
         await supabase.from('fichajes').insert({ empleado_id: seleccionado.id, accion, lat: pos.coords.latitude, lng: pos.coords.longitude, foto_url: fotoUrl })
         setEstado(accion === 'entrada' ? 'ok_entrada' : 'ok_salida')
         await cargarDatos()
@@ -324,6 +350,28 @@ export default function Home() {
               {modoHistorial ? 'Ingresa tu PIN para ver tus horas' : estaAdentro(seleccionado.id) ? 'Registrar salida' : 'Registrar entrada'}
             </div>
 
+            {/* Aviso bloqueo entrada sin salida — solo visible despues de PIN correcto */}
+            {estado === 'bloqueado_entrada' && (
+              <div style={{ marginBottom: 16 }}>
+                <div style={{ background: '#fef2f2', border: '0.5px solid #fca5a5', borderRadius: 10, padding: '14px', marginBottom: 14, textAlign: 'left' }}>
+                  <div style={{ fontWeight: 500, color: '#991b1b', fontSize: 14, marginBottom: 4 }}>Tenes una entrada sin salida</div>
+                  <div style={{ fontSize: 13, color: '#b91c1c' }}>
+                    Entraste a las {fmtHoraStr(tieneEntradaSinSalida(seleccionado.id)?.hora)}. Registra tu salida antes de volver a entrar.
+                  </div>
+                </div>
+                <button onClick={async () => {
+                  setEstado(null)
+                  await confirmarFichaje('salida')
+                }} style={{ width: '100%', padding: '14px', background: '#dc2626', color: '#fff', border: 'none', borderRadius: 12, fontSize: 15, fontWeight: 600, cursor: 'pointer' }}>
+                  Registrar salida
+                </button>
+                <button onClick={() => { setSeleccionado(null); setPin(''); setEstado(null) }}
+                  style={{ marginTop: 8, width: '100%', padding: '10px', background: 'none', border: '1px solid #e2e8f0', borderRadius: 10, fontSize: 13, color: '#64748b', cursor: 'pointer' }}>
+                  Cancelar
+                </button>
+              </div>
+            )}
+
             {esperandoFoto && !fotoCapturada && !webcamActiva && (
               <div style={{ marginBottom: 16, padding: '16px', background: '#f1f5f9', borderRadius: 10 }}>
                 <div style={{ fontSize: 14, color: '#475569', marginBottom: 12 }}>Saca una foto para continuar</div>
@@ -372,7 +420,7 @@ export default function Home() {
             {estado === 'ok_entrada' && <div style={{ color: '#16a34a', fontSize: 14, fontWeight: 500, marginBottom: 12 }}>Entrada registrada</div>}
             {estado === 'ok_salida' && <div style={{ color: '#dc2626', fontSize: 14, fontWeight: 500, marginBottom: 12 }}>Salida registrada</div>}
 
-            {!esperandoFoto && !webcamActiva && (
+            {!esperandoFoto && !webcamActiva && estado !== 'bloqueado_entrada' && (
               <>
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 10, marginBottom: 16 }}>
                   {[1,2,3,4,5,6,7,8,9].map(n => (
