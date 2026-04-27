@@ -65,10 +65,17 @@ export default function Admin() {
 
   async function cargarDatos() {
     const { data: emps } = await supabase.from('empleados').select('*').eq('activo', true).order('nombre')
+    // Para turnos nocturnos: traer desde el mediodia del dia anterior (15hs UTC = 12hs arg)
+    // hasta las 03:00 UTC del dia siguiente (00:00 arg del dia siguiente)
+    const diaAnterior = new Date(fechaFiltro + 'T12:00:00Z')
+    diaAnterior.setDate(diaAnterior.getDate() - 1)
+    const diaAnteriorStr = diaAnterior.toISOString().slice(0, 10)
+
     const { data: fich } = await supabase
       .from('fichajes').select('*, empleados(nombre, rol)')
-      .gte('hora', fechaFiltro + 'T03:00:00Z').lte('hora', nextArgDate(fechaFiltro) + 'T02:59:59Z')
-      .order('hora', { ascending: false })
+      .gte('hora', diaAnteriorStr + 'T15:00:00Z')
+      .lte('hora', nextArgDate(fechaFiltro) + 'T02:59:59Z')
+      .order('hora', { ascending: true })
     setEmpleados(emps || [])
     setFichajes(fich || [])
   }
@@ -161,46 +168,67 @@ export default function Admin() {
     return turnos.find(t => t.empleado_id === empId && t.dia_semana === dia)
   }
 
-  function horasTrabajadas(empId) {
-    const logs = fichajes.filter(f => f.empleado_id === empId).sort((a,b) => new Date(a.hora)-new Date(b.hora))
-    let total = 0
-    for (let i = 0; i < logs.length - 1; i++) {
-      if (logs[i].accion === 'entrada' && logs[i+1].accion === 'salida')
-        total += new Date(logs[i+1].hora) - new Date(logs[i].hora)
+  // Empareja entradas con salidas por proximidad — funciona con turnos nocturnos que cruzan medianoche
+  function emparejarTurnos(logs) {
+    const sorted = [...logs].sort((a,b) => new Date(a.hora)-new Date(b.hora))
+    const pares = []
+    let i = 0
+    while (i < sorted.length) {
+      if (sorted[i].accion === 'entrada') {
+        const entrada = sorted[i]
+        // Buscar la siguiente salida dentro de las proximas 18 horas
+        let salida = null
+        for (let j = i+1; j < sorted.length; j++) {
+          if (sorted[j].accion === 'salida') {
+            const diff = new Date(sorted[j].hora) - new Date(entrada.hora)
+            if (diff > 0 && diff <= 18 * 3600000) { salida = sorted[j]; i = j; break }
+          }
+        }
+        pares.push({ entrada, salida })
+      }
+      i++
     }
+    return pares
+  }
+
+  function horasTrabajadas(empId) {
+    const logs = fichajes.filter(f => f.empleado_id === empId)
+    const pares = emparejarTurnos(logs)
+    let total = 0
+    pares.forEach(p => { if (p.salida) total += new Date(p.salida.hora) - new Date(p.entrada.hora) })
     if (total === 0) return null
     return `${Math.floor(total/3600000)}h ${Math.floor((total%3600000)/60000)}m`
   }
 
   function calcularLiquidacion(empId) {
-    const logs = fichajesMes.filter(f => f.empleado_id === empId).sort((a,b) => new Date(a.hora)-new Date(b.hora))
+    const logs = fichajesMes.filter(f => f.empleado_id === empId)
     const tarifa = tarifas[empId] || 0
+    const pares = emparejarTurnos(logs)
 
-    // Agrupar por dia
+    // Agrupar por dia de entrada en hora argentina
     const diasMap = {}
-    for (let i = 0; i < logs.length - 1; i++) {
-      if (logs[i].accion === 'entrada' && logs[i+1].accion === 'salida') {
-        const entrada = new Date(logs[i].hora)
-        const salida = new Date(logs[i+1].hora)
-        const dia = toArgDate(new Date(logs[i].hora))
-        const horas = (salida - entrada) / 3600000
+    pares.forEach(par => {
+      const entrada = new Date(par.entrada.hora)
+      const dia = toArgDate(entrada)
+      const horas = par.salida ? (new Date(par.salida.hora) - entrada) / 3600000 : 0
 
-        // Calcular tardanza
-        const diaSemana = entrada.getDay()
-        const turno = getTurno(empId, diaSemana)
-        let minTardanza = 0
-        if (turno && !turno.es_franco && turno.hora_entrada) {
-          const [hT, mT] = turno.hora_entrada.slice(0,5).split(':').map(Number)
-          const minEsperado = hT * 60 + mT
-          const minReal = entrada.getHours() * 60 + entrada.getMinutes()
-          minTardanza = Math.max(0, minReal - minEsperado - toleranciaTardanza)
-        }
-
-        if (!diasMap[dia]) diasMap[dia] = { horas: 0, tardanza: 0 }
-        diasMap[dia].horas += horas
-        diasMap[dia].tardanza = Math.max(diasMap[dia].tardanza, minTardanza)
+      // Calcular tardanza usando hora argentina
+      const horaArgEntrada = new Date(par.entrada.hora).toLocaleString('en-US', { timeZone: 'America/Argentina/Buenos_Aires' })
+      const entradaArg = new Date(horaArgEntrada)
+      const diaSemana = entradaArg.getDay()
+      const turno = getTurno(empId, diaSemana)
+      let minTardanza = 0
+      if (turno && !turno.es_franco && turno.hora_entrada) {
+        const [hT, mT] = turno.hora_entrada.slice(0,5).split(':').map(Number)
+        const minEsperado = hT * 60 + mT
+        const minReal = entradaArg.getHours() * 60 + entradaArg.getMinutes()
+        minTardanza = Math.max(0, minReal - minEsperado - toleranciaTardanza)
       }
-    }
+
+      if (!diasMap[dia]) diasMap[dia] = { horas: 0, tardanza: 0 }
+      diasMap[dia].horas += horas
+      diasMap[dia].tardanza = Math.max(diasMap[dia].tardanza, minTardanza)
+    })
 
     let hn = 0, he = 0, minDescuento = 0, diasPuntuales = 0
     const diasTrabajados = Object.keys(diasMap).length
@@ -225,30 +253,21 @@ export default function Admin() {
 
     const horasDescuento = minDescuento / 60
     const hnReal = Math.max(0, hn - horasDescuento)
-
     const tn = Math.round(hnReal * tarifa)
     const te = Math.round(he * tarifa * (1 + recargo/100))
 
-    // Premios
     const tienePresentismo = diasTrabajados >= diasLaborablesMes.length && diasLaborablesMes.length > 0
     const tienePuntualidad = diasPuntuales >= diasPuntualidad
-
     const bonoPresentismo = tienePresentismo ? premioPresentismo : 0
     const bonoPuntualidad = tienePuntualidad ? premioPuntualidad : 0
-
     const total = tn + te + bonoPresentismo + bonoPuntualidad
 
     return {
-      dias: diasTrabajados,
-      diasLaborables: diasLaborablesMes.length,
-      hn: Math.round(hnReal * 10) / 10,
-      he: Math.round(he * 10) / 10,
-      tardanzaMin: Math.round(minDescuento),
-      diasPuntuales,
-      tn, te,
-      bonoPresentismo, bonoPuntualidad,
-      tienePresentismo, tienePuntualidad,
-      total
+      dias: diasTrabajados, diasLaborables: diasLaborablesMes.length,
+      hn: Math.round(hnReal * 10) / 10, he: Math.round(he * 10) / 10,
+      tardanzaMin: Math.round(minDescuento), diasPuntuales,
+      tn, te, bonoPresentismo, bonoPuntualidad,
+      tienePresentismo, tienePuntualidad, total
     }
   }
 
@@ -413,21 +432,38 @@ export default function Admin() {
             <div style={{ background: '#fff', border: '1px solid #e2e8f0', borderRadius: 14 }}>
               {fichajes.length === 0 && <div style={{ padding: '3rem', textAlign: 'center', color: '#94a3b8', fontSize: 14 }}>Sin registros.</div>}
               {empleados.filter(e => !e.es_admin).map(emp => {
-                const logsEmp = [...fichajes].filter(f => f.empleado_id === emp.id).sort((a,b) => new Date(a.hora)-new Date(b.hora))
+                const logsEmp = [...fichajes].filter(f => f.empleado_id === emp.id)
                 if (!logsEmp.length) return null
+                // Usar emparejamiento por proximidad para turnos nocturnos
+                const pares = emparejarTurnos(logsEmp)
+                // Solo mostrar pares donde la entrada corresponde al dia seleccionado en hora argentina
+                const paresDia = pares.filter(p => toArgDate(new Date(p.entrada.hora)) === fechaFiltro)
+                // Tambien mostrar entradas sueltas del dia (sin salida aun)
+                const entradasSueltas = logsEmp.filter(f => 
+                  f.accion === 'entrada' && 
+                  toArgDate(new Date(f.hora)) === fechaFiltro &&
+                  !pares.find(p => p.entrada.id === f.id && p.salida)
+                )
+                if (!paresDia.length && !entradasSueltas.length) return null
+
                 // Calcular total horas del dia
                 let totalMs = 0
-                for (let i = 0; i < logsEmp.length-1; i++) {
-                  if (logsEmp[i].accion==='entrada' && logsEmp[i+1].accion==='salida')
-                    totalMs += new Date(logsEmp[i+1].hora) - new Date(logsEmp[i].hora)
-                }
+                paresDia.forEach(p => { if (p.salida) totalMs += new Date(p.salida.hora) - new Date(p.entrada.hora) })
+                const th = Math.floor(totalMs/3600000); const tm = Math.floor((totalMs%3600000)/60000)
+
+                // Todos los registros a mostrar ordenados
+                const todosLogs = []
+                paresDia.forEach(p => { todosLogs.push(p.entrada); if (p.salida) todosLogs.push(p.salida) })
+                entradasSueltas.forEach(e => { if (!todosLogs.find(l => l.id === e.id)) todosLogs.push(e) })
+                todosLogs.sort((a,b) => new Date(a.hora)-new Date(b.hora))
+                const ultimaFoto = [...todosLogs].reverse().find(f => f.foto_url)
                 const th = Math.floor(totalMs/3600000); const tm = Math.floor((totalMs%3600000)/60000)
                 return (
                   <div key={emp.id} style={{ borderBottom: '1px solid #f1f5f9', padding: '12px 16px' }}>
                     <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
                       <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                        {logsEmp[logsEmp.length-1]?.foto_url ? (
-                          <img src={logsEmp[logsEmp.length-1].foto_url} onClick={() => setFotoModal({ url: logsEmp[logsEmp.length-1].foto_url, nombre: emp.nombre, accion: '', hora: '' })}
+                        {ultimaFoto?.foto_url ? (
+                          <img src={ultimaFoto.foto_url} onClick={() => setFotoModal({ url: ultimaFoto.foto_url, nombre: emp.nombre, accion: '', hora: '' })}
                             style={{ width: 40, height: 40, borderRadius: 8, objectFit: 'cover', cursor: 'pointer', border: '1px solid #e2e8f0' }} alt="foto" />
                         ) : (
                           <div style={{ width: 40, height: 40, borderRadius: 8, background: '#f1f5f9', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 16 }}>👤</div>
@@ -438,13 +474,15 @@ export default function Admin() {
                         </div>
                       </div>
                       {totalMs > 0 && <span style={{ background: '#dbeafe', color: '#1e40af', padding: '3px 10px', borderRadius: 20, fontSize: 13, fontWeight: 500 }}>{th}h {tm}m</span>}
+                      {totalMs === 0 && todosLogs.length > 0 && <span style={{ background: '#fef9c3', color: '#854d0e', padding: '3px 10px', borderRadius: 20, fontSize: 12 }}>En curso</span>}
                     </div>
                     <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-                      {logsEmp.map(f => (
+                      {todosLogs.map(f => (
                         <div key={f.id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', background: '#f8fafc', borderRadius: 8, padding: '6px 10px' }}>
                           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                             <span style={{ padding: '2px 8px', borderRadius: 20, fontSize: 11, background: f.accion==='entrada'?'#dcfce7':'#fee2e2', color: f.accion==='entrada'?'#166534':'#991b1b', fontWeight: 500 }}>{f.accion}</span>
                             <span style={{ fontFamily: 'monospace', fontSize: 14, color: '#334155', fontWeight: 500 }}>{fmtHoraStr(f.hora)}</span>
+                            {toArgDate(new Date(f.hora)) !== fechaFiltro && <span style={{ fontSize: 11, color: '#94a3b8' }}>(dia anterior)</span>}
                             {f.foto_url && (
                               <img src={f.foto_url} onClick={() => setFotoModal({ url: f.foto_url, nombre: emp.nombre, accion: f.accion, hora: fmtHoraStr(f.hora) })}
                                 style={{ width: 24, height: 24, borderRadius: 4, objectFit: 'cover', cursor: 'pointer', border: '1px solid #e2e8f0' }} alt="foto" />
