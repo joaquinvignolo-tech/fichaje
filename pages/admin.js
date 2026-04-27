@@ -43,6 +43,13 @@ export default function Admin() {
   const [borrandoId, setBorrandoId] = useState(null)
   const [fechaBorrar, setFechaBorrar] = useState(toArgDate(new Date()))
   const [empBorrar, setEmpBorrar] = useState('')
+  const [historialMesEmp, setHistorialMesEmp] = useState(null)
+  const [historialMesLogs, setHistorialMesLogs] = useState([])
+  const [editandoEmp, setEditandoEmp] = useState(null)
+  const [editPin, setEditPin] = useState('')
+  const [editTarifa, setEditTarifa] = useState('')
+  const [editRol, setEditRol] = useState('')
+  const [guardandoEdit, setGuardandoEdit] = useState(false)
   // Configuracion premios y descuentos
   const [premioPresentismo, setPremioPresentismo] = useState(0)
   const [premioPuntualidad, setPremioPuntualidad] = useState(0)
@@ -80,6 +87,10 @@ export default function Admin() {
       .order('hora', { ascending: true })
     setEmpleados(emps || [])
     setFichajes(fich || [])
+    // Cargar tarifas desde la base de datos
+    const tarifasObj = {}
+    ;(emps || []).forEach(e => { if (e.tarifa_hora) tarifasObj[e.id] = e.tarifa_hora })
+    setTarifas(tarifasObj)
   }
 
   async function cargarTurnos() {
@@ -134,6 +145,43 @@ export default function Admin() {
     setHoraManual('09:00')
     await cargarDatos()
     setGuardandoManual(false)
+  }
+
+  async function guardarTarifaDB(empId, valor) {
+    await supabase.from('empleados').update({ tarifa_hora: valor }).eq('id', empId)
+    setTarifas(t => ({ ...t, [empId]: valor }))
+  }
+
+  function abrirEdicion(emp) {
+    setEditandoEmp(emp)
+    setEditPin('')
+    setEditTarifa(emp.tarifa_hora || '')
+    setEditRol(emp.rol || '')
+  }
+
+  async function guardarEdicion() {
+    if (!editandoEmp) return
+    setGuardandoEdit(true)
+    const updates = { rol: editRol, tarifa_hora: editTarifa ? Number(editTarifa) : 0 }
+    if (editPin && editPin.length === 4) updates.pin = editPin
+    await supabase.from('empleados').update(updates).eq('id', editandoEmp.id)
+    setEditandoEmp(null)
+    await cargarDatos()
+    setGuardandoEdit(false)
+  }
+
+  async function verHistorialMes(emp) {
+    const inicio = mesFiltro + '-01T03:00:00Z'
+    const fin = new Date(mesFiltro + '-01')
+    fin.setMonth(fin.getMonth() + 1)
+    const finStr = fin.toISOString().slice(0,10) + 'T03:00:00Z'
+    const { data } = await supabase.from('fichajes').select('*')
+      .eq('empleado_id', emp.id)
+      .gte('hora', inicio)
+      .lte('hora', finStr)
+      .order('hora', { ascending: true })
+    setHistorialMesEmp(emp)
+    setHistorialMesLogs(data || [])
   }
 
   async function borrarRegistro(id) {
@@ -346,6 +394,100 @@ export default function Admin() {
 
   return (
     <div style={{ minHeight: '100vh', background: '#f8fafc' }}>
+
+      {/* Modal historial mensual */}
+      {historialMesEmp && (
+        <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(0,0,0,0.6)', display: 'flex', alignItems: 'flex-start', justifyContent: 'center', zIndex: 1000, overflowY: 'auto', padding: '20px' }}>
+          <div style={{ background: '#fff', borderRadius: 16, width: '100%', maxWidth: 600, padding: '20px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>
+              <div>
+                <div style={{ fontWeight: 600, fontSize: 17 }}>{historialMesEmp.nombre}</div>
+                <div style={{ fontSize: 13, color: '#64748b' }}>Historial de {new Date(mesFiltro+'-02').toLocaleDateString('es-AR',{month:'long',year:'numeric'})}</div>
+              </div>
+              <button onClick={() => setHistorialMesEmp(null)} style={{ background: 'none', border: 'none', fontSize: 20, cursor: 'pointer', color: '#64748b' }}>✕</button>
+            </div>
+            {(() => {
+              const pares = emparejarTurnos(historialMesLogs)
+              const diasMap = {}
+              pares.forEach(p => {
+                const dia = toArgDate(new Date(p.entrada.hora))
+                if (!diasMap[dia]) diasMap[dia] = []
+                diasMap[dia].push(p)
+              })
+              let totalMes = 0
+              const diasOrdenados = Object.keys(diasMap).sort()
+              return (
+                <div>
+                  {diasOrdenados.map(dia => {
+                    const paresDia = diasMap[dia]
+                    let totalDia = 0
+                    paresDia.forEach(p => { if (p.salida) totalDia += new Date(p.salida.hora) - new Date(p.entrada.hora) })
+                    totalMes += totalDia
+                    const hD = Math.floor(totalDia/3600000); const mD = Math.floor((totalDia%3600000)/60000)
+                    return (
+                      <div key={dia} style={{ borderBottom: '1px solid #f1f5f9', padding: '10px 0' }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                          <div style={{ fontSize: 14, fontWeight: 500, textTransform: 'capitalize' }}>
+                            {new Date(dia+'T12:00:00').toLocaleDateString('es-AR',{weekday:'short',day:'numeric',month:'short'})}
+                          </div>
+                          {totalDia > 0 ? <span style={{ background: '#dbeafe', color: '#1e40af', padding: '2px 8px', borderRadius: 20, fontSize: 12 }}>{hD}h {mD}m</span>
+                            : <span style={{ background: '#fef9c3', color: '#854d0e', padding: '2px 8px', borderRadius: 20, fontSize: 12 }}>En curso</span>}
+                        </div>
+                        {paresDia.map((p,i) => (
+                          <div key={i} style={{ display: 'flex', gap: 12, marginTop: 6, fontSize: 13, color: '#475569' }}>
+                            <span style={{ background: '#dcfce7', color: '#166534', padding: '1px 8px', borderRadius: 6, fontSize: 12 }}>entrada {fmtHoraStr(p.entrada.hora)}</span>
+                            {p.salida ? <span style={{ background: '#fee2e2', color: '#991b1b', padding: '1px 8px', borderRadius: 6, fontSize: 12 }}>salida {fmtHoraStr(p.salida.hora)}</span>
+                              : <span style={{ color: '#94a3b8', fontSize: 12 }}>sin salida registrada</span>}
+                          </div>
+                        ))}
+                      </div>
+                    )
+                  })}
+                  <div style={{ marginTop: 16, padding: '12px', background: '#f8fafc', borderRadius: 10, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <span style={{ fontWeight: 500, fontSize: 14 }}>Total del mes</span>
+                    <span style={{ fontWeight: 600, fontSize: 16, color: '#1e40af' }}>{Math.floor(totalMes/3600000)}h {Math.floor((totalMes%3600000)/60000)}m</span>
+                  </div>
+                </div>
+              )
+            })()}
+          </div>
+        </div>
+      )}
+
+      {/* Modal editar empleado */}
+      {editandoEmp && (
+        <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 }}>
+          <div style={{ background: '#fff', borderRadius: 16, padding: '24px', width: '90%', maxWidth: 360 }}>
+            <div style={{ fontWeight: 600, fontSize: 16, marginBottom: 20 }}>Editar — {editandoEmp.nombre}</div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+              <div>
+                <div style={{ fontSize: 12, color: '#64748b', marginBottom: 4 }}>Rol</div>
+                <input value={editRol} onChange={e => setEditRol(e.target.value)}
+                  style={{ width: '100%', border: '1px solid #e2e8f0', borderRadius: 8, padding: '8px 12px', fontSize: 14 }} />
+              </div>
+              <div>
+                <div style={{ fontSize: 12, color: '#64748b', marginBottom: 4 }}>Nuevo PIN (dejar vacio para no cambiar)</div>
+                <input type="password" value={editPin} onChange={e => setEditPin(e.target.value.replace(/\D/g,'').slice(0,4))}
+                  placeholder="4 digitos" maxLength={4}
+                  style={{ width: '100%', border: '1px solid #e2e8f0', borderRadius: 8, padding: '8px 12px', fontSize: 14, letterSpacing: 6 }} />
+              </div>
+              <div>
+                <div style={{ fontSize: 12, color: '#64748b', marginBottom: 4 }}>Tarifa por hora ($)</div>
+                <input type="number" value={editTarifa} onChange={e => setEditTarifa(e.target.value)} placeholder="0" min={0}
+                  style={{ width: '100%', border: '1px solid #e2e8f0', borderRadius: 8, padding: '8px 12px', fontSize: 14 }} />
+              </div>
+            </div>
+            <div style={{ display: 'flex', gap: 10, marginTop: 20 }}>
+              <button onClick={() => setEditandoEmp(null)} style={{ flex: 1, padding: '10px', background: '#f1f5f9', border: 'none', borderRadius: 9, fontSize: 14, cursor: 'pointer' }}>Cancelar</button>
+              <button onClick={guardarEdicion} disabled={guardandoEdit}
+                style={{ flex: 1, padding: '10px', background: '#1e293b', color: '#fff', border: 'none', borderRadius: 9, fontSize: 14, fontWeight: 500, cursor: 'pointer' }}>
+                {guardandoEdit ? 'Guardando...' : 'Guardar'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {fotoModal && (
         <div onClick={() => setFotoModal(null)} style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(0,0,0,0.8)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 }}>
           <div style={{ maxWidth: 400, width: '90%' }}>
@@ -458,7 +600,7 @@ export default function Admin() {
                 // Calcular total horas del dia
                 let totalMs = 0
                 paresDia.forEach(p => { if (p.salida) totalMs += new Date(p.salida.hora) - new Date(p.entrada.hora) })
-                const th = Math.floor(totalMs/3600000); const tm = Math.floor((totalMs%3600000)/60000)
+                const thH = Math.floor(totalMs/3600000); const tmM = Math.floor((totalMs%3600000)/60000)
 
                 // Todos los registros a mostrar ordenados
                 const todosLogs = []
@@ -466,11 +608,10 @@ export default function Admin() {
                 entradasSueltas.forEach(e => { if (!todosLogs.find(l => l.id === e.id)) todosLogs.push(e) })
                 todosLogs.sort((a,b) => new Date(a.hora)-new Date(b.hora))
                 const ultimaFoto = [...todosLogs].reverse().find(f => f.foto_url)
-                const th = Math.floor(totalMs/3600000); const tm = Math.floor((totalMs%3600000)/60000)
                 return (
                   <div key={emp.id} style={{ borderBottom: '1px solid #f1f5f9', padding: '12px 16px' }}>
                     <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer' }} onClick={() => verHistorialMes(emp)}>
                         {ultimaFoto?.foto_url ? (
                           <img src={ultimaFoto.foto_url} onClick={() => setFotoModal({ url: ultimaFoto.foto_url, nombre: emp.nombre, accion: '', hora: '' })}
                             style={{ width: 40, height: 40, borderRadius: 8, objectFit: 'cover', cursor: 'pointer', border: '1px solid #e2e8f0' }} alt="foto" />
@@ -478,11 +619,11 @@ export default function Admin() {
                           <div style={{ width: 40, height: 40, borderRadius: 8, background: '#f1f5f9', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 16 }}>👤</div>
                         )}
                         <div>
-                          <div style={{ fontWeight: 500, fontSize: 14 }}>{emp.nombre}</div>
-                          <div style={{ fontSize: 12, color: '#94a3b8' }}>{emp.rol}</div>
+                          <div style={{ fontWeight: 500, fontSize: 14, color: '#1e40af', textDecoration: 'underline' }}>{emp.nombre}</div>
+                          <div style={{ fontSize: 12, color: '#94a3b8' }}>{emp.rol} — toca para ver historial del mes</div>
                         </div>
                       </div>
-                      {totalMs > 0 && <span style={{ background: '#dbeafe', color: '#1e40af', padding: '3px 10px', borderRadius: 20, fontSize: 13, fontWeight: 500 }}>{th}h {tm}m</span>}
+                      {totalMs > 0 && <span style={{ background: '#dbeafe', color: '#1e40af', padding: '3px 10px', borderRadius: 20, fontSize: 13, fontWeight: 500 }}>{thH}h {tmM}m</span>}
                       {totalMs === 0 && todosLogs.length > 0 && <span style={{ background: '#fef9c3', color: '#854d0e', padding: '3px 10px', borderRadius: 20, fontSize: 12 }}>En curso</span>}
                     </div>
                     <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
@@ -689,7 +830,10 @@ export default function Admin() {
                     <div key={emp.id} style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
                       <span style={{ fontSize: 14, minWidth: 150 }}>{emp.nombre}</span>
                       <span style={{ fontSize: 14, color: '#64748b' }}>$</span>
-                      <input type="number" value={tarifas[emp.id] || ''} onChange={e => setTarifas(t => ({ ...t, [emp.id]: Number(e.target.value) }))} placeholder="0" min={0}
+                      <input type="number" value={tarifas[emp.id] || ''} onChange={e => {
+                        const val = Number(e.target.value)
+                        setTarifas(t => ({ ...t, [emp.id]: val }))
+                      }} onBlur={e => guardarTarifaDB(emp.id, Number(e.target.value))} placeholder="0" min={0}
                         style={{ width: 100, border: '1px solid #e2e8f0', borderRadius: 8, padding: '6px 10px', fontSize: 14 }} />
                       <span style={{ fontSize: 12, color: '#94a3b8' }}>/ hora</span>
                     </div>
@@ -801,7 +945,10 @@ export default function Admin() {
                     <span style={{ fontSize: 12, color: '#94a3b8', marginLeft: 8 }}>{emp.rol}</span>
                     {emp.es_admin && <span style={{ marginLeft: 8, background: '#ede9fe', color: '#5b21b6', fontSize: 11, padding: '2px 7px', borderRadius: 20 }}>Admin</span>}
                   </div>
-                  <button onClick={() => desactivarEmpleado(emp.id)} style={{ background: 'none', border: '1px solid #fca5a5', color: '#dc2626', borderRadius: 7, padding: '5px 10px', fontSize: 12, cursor: 'pointer' }}>Dar de baja</button>
+                  <div style={{ display: 'flex', gap: 8 }}>
+                    <button onClick={() => abrirEdicion(emp)} style={{ background: 'none', border: '1px solid #e2e8f0', color: '#475569', borderRadius: 7, padding: '5px 10px', fontSize: 12, cursor: 'pointer' }}>Editar</button>
+                    <button onClick={() => desactivarEmpleado(emp.id)} style={{ background: 'none', border: '1px solid #fca5a5', color: '#dc2626', borderRadius: 7, padding: '5px 10px', fontSize: 12, cursor: 'pointer' }}>Dar de baja</button>
+                  </div>
                 </div>
               ))}
             </div>
