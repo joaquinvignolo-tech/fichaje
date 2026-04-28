@@ -611,7 +611,7 @@ export default function Admin() {
                 return (
                   <div key={emp.id} style={{ borderBottom: '1px solid #f1f5f9', padding: '12px 16px' }}>
                     <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer' }} onClick={() => verHistorialMes(emp)}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
                         {ultimaFoto?.foto_url ? (
                           <img src={ultimaFoto.foto_url} onClick={() => setFotoModal({ url: ultimaFoto.foto_url, nombre: emp.nombre, accion: '', hora: '' })}
                             style={{ width: 40, height: 40, borderRadius: 8, objectFit: 'cover', cursor: 'pointer', border: '1px solid #e2e8f0' }} alt="foto" />
@@ -619,8 +619,8 @@ export default function Admin() {
                           <div style={{ width: 40, height: 40, borderRadius: 8, background: '#f1f5f9', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 16 }}>👤</div>
                         )}
                         <div>
-                          <div style={{ fontWeight: 500, fontSize: 14, color: '#1e40af', textDecoration: 'underline' }}>{emp.nombre}</div>
-                          <div style={{ fontSize: 12, color: '#94a3b8' }}>{emp.rol} — toca para ver historial del mes</div>
+                          <div onClick={() => verHistorialMes(emp)} style={{ fontWeight: 500, fontSize: 14, color: '#1e40af', textDecoration: 'underline', cursor: 'pointer' }}>{emp.nombre} 📋</div>
+                          <div style={{ fontSize: 12, color: '#94a3b8' }}>{emp.rol}</div>
                         </div>
                       </div>
                       {totalMs > 0 && <span style={{ background: '#dbeafe', color: '#1e40af', padding: '3px 10px', borderRadius: 20, fontSize: 13, fontWeight: 500 }}>{thH}h {tmM}m</span>}
