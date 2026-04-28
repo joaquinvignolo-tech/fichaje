@@ -171,15 +171,18 @@ export default function Admin() {
   }
 
   async function verHistorialMes(emp) {
+    console.log('verHistorialMes called for', emp.nombre)
     const inicio = mesFiltro + '-01T03:00:00Z'
     const fin = new Date(mesFiltro + '-01')
     fin.setMonth(fin.getMonth() + 1)
     const finStr = fin.toISOString().slice(0,10) + 'T03:00:00Z'
-    const { data } = await supabase.from('fichajes').select('*')
+    console.log('Fetching from', inicio, 'to', finStr)
+    const { data, error } = await supabase.from('fichajes').select('*')
       .eq('empleado_id', emp.id)
       .gte('hora', inicio)
       .lte('hora', finStr)
       .order('hora', { ascending: true })
+    console.log('Got', data?.length, 'records', error)
     setHistorialMesEmp(emp)
     setHistorialMesLogs(data || [])
   }
