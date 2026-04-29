@@ -801,5 +801,5 @@ function TurnoCell({ turno, onSave }) {
         </div>
       </div>
     </td>
-  )
+  )  
 }
